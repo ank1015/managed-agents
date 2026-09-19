@@ -1,0 +1,24 @@
+{
+  "name": "@managed-agents/session-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "pnpm typecheck && pnpm test",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@managed-agents/sqlite-json": "workspace:*",
+    "@cloudflare/workers-types": "5.20260910.1",
+    "@managed-agents/contracts": "workspace:*",
+    "@managed-agents/harness-api": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "0.27.3",
+    "miniflare": "4.20260730.0"
+  }
+}
