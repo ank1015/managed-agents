@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "managed-agents-llm-gateway",
+  "account_id": "62fc73035acad6807728e4385fc03df0",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-30",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "routes": [{ "pattern": "llm-callbacks.acentric.dev", "custom_domain": true }],
+  "vars": {
+    "GATEWAY_URL": "https://gateway.acentric.dev",
+    "SESSION_ROUTES": "{\"minimal-bash-v1\":\"MINIMAL_BASH_SESSIONS\"}"
+  },
+  "d1_databases": [{
+    "binding": "LLM_DB",
+    "database_name": "managed-agents-llm-operations",
+    "database_id": "eb9ccc33-7119-41a1-80d4-5b0d9f1de34e",
+    "migrations_dir": "migrations"
+  }],
+  "queues": {
+    "producers": [{ "binding": "COMPLETIONS", "queue": "managed-agents-llm-completions" }],
+    "consumers": [{ "queue": "managed-agents-llm-completions", "max_batch_size": 1, "max_batch_timeout": 0, "max_retries": 5 }]
+  },
+  "triggers": { "crons": ["* * * * *"] },
+  // Add each LLM-capable harness's existing namespace here and in SESSION_ROUTES.
+  "durable_objects": { "bindings": [{ "name": "MINIMAL_BASH_SESSIONS", "class_name": "MinimalBashSession", "script_name": "managed-agents-harness-minimal-bash" }] }
+}

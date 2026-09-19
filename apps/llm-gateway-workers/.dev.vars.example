@@ -1,0 +1,2 @@
+GATEWAY_API_KEY=replace-with-dedicated-gateway-user-api-key
+GATEWAY_WEBHOOK_SECRET=replace-with-that-users-webhook-secret
