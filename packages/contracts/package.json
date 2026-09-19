@@ -1,0 +1,14 @@
+{
+  "name": "@managed-agents/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "pnpm typecheck && pnpm test",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+    "test": "node --test test/*.test.ts"
+  }
+}
