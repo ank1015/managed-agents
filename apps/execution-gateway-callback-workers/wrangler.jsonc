@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "managed-agents-execution-gateway-callback",
+  "account_id": "62fc73035acad6807728e4385fc03df0",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-30",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "routes": [{ "pattern": "execution-callbacks.acentric.dev", "custom_domain": true }],
+  "vars": { "CALLBACK_ROUTES": "{\"tool-pi-bash-v1\":\"BASH_EVENTS\"}" },
+  "services": [{ "binding": "BASH_EVENTS", "service": "managed-agents-tool-pi-bash", "entrypoint": "PiBashCallbacks" }],
+  "d1_databases": [{
+    "binding": "CALLBACK_DB",
+    "database_name": "managed-agents-execution-callbacks",
+    "database_id": "336db30c-be1a-4e4c-8d42-668cd19aae53",
+    "migrations_dir": "migrations"
+  }],
+  "queues": {
+    "producers": [{ "binding": "DELIVERIES", "queue": "managed-agents-execution-callbacks" }],
+    "consumers": [{ "queue": "managed-agents-execution-callbacks", "max_batch_size": 1, "max_batch_timeout": 0, "max_retries": 5 }]
+  },
+  "triggers": { "crons": ["* * * * *"] }
+}
