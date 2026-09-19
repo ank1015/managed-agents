@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "managed-agents-tool-pi-bash",
+  "account_id": "62fc73035acad6807728e4385fc03df0",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-30",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  // Private service-binding worker; the separate callback worker owns the public HTTPS route.
+  "vars": {
+    "EXECUTION_GATEWAY_URL": "https://execution.acentric.dev",
+    "SESSION_ROUTES": "{\"minimal-bash-v1\":\"MINIMAL_BASH_SESSIONS\"}"
+  },
+  "d1_databases": [{
+    "binding": "BASH_DB",
+    "database_name": "managed-agents-bash-operations",
+    "database_id": "f7bb32f8-b0ed-4dd2-9f83-b5d00923fa0e",
+    "migrations_dir": "migrations"
+  }],
+  "queues": {
+    "producers": [{ "binding": "COMPLETIONS", "queue": "managed-agents-bash-completions" }],
+    "consumers": [{ "queue": "managed-agents-bash-completions", "max_batch_size": 1, "max_batch_timeout": 0, "max_retries": 5 }]
+  },
+  "triggers": { "crons": ["* * * * *"] },
+  // Add each BASH-capable harness's existing namespace here and in SESSION_ROUTES.
+  "durable_objects": { "bindings": [{ "name": "MINIMAL_BASH_SESSIONS", "class_name": "MinimalBashSession", "script_name": "managed-agents-harness-minimal-bash" }] }
+}
