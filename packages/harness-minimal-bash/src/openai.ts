@@ -1,10 +1,9 @@
-import { MAX_OPERATION_INPUT_BYTES, PI_BASH_TOOL, parseJsonValue } from "@managed-agents/contracts";
+import { MAX_OPERATION_INPUT_BYTES, PI_BASH_TOOL, parseJsonValue, utf8Bytes } from "@managed-agents/contracts";
 import type { JsonValue, LlmAssistantMessage, LlmInput, LlmMessage } from "@managed-agents/contracts";
 import { OPENAI_MODELS } from "./contracts.ts";
 import type { MinimalBashConfig } from "./contracts.ts";
 import type { Sql } from "./state.ts";
-import { readMessageText } from "./state.ts";
-import { storedJsonBytes } from "@managed-agents/sqlite-json";
+import { createInstructions } from "./instructions.ts";
 
 export class HarnessFailure extends Error {
   readonly code: string;
@@ -28,19 +27,26 @@ export function toolCalls(message: LlmAssistantMessage): ToolCall[] {
   }
   return calls;
 }
-export function buildLlmInput(sql: Sql, config: MinimalBashConfig, sessionId: string): JsonValue {
+export function buildLlmInput(sql: Sql, config: MinimalBashConfig, sessionId: string, appended: readonly LlmMessage[] = []): JsonValue {
   const messages: LlmMessage[] = [];
   let bytes = 0;
-  for (const row of sql.exec<{ message_json: string }>("SELECT message_json FROM minimal_bash_messages WHERE in_context = 1 ORDER BY sequence")) {
-    bytes += storedJsonBytes(row.message_json);
+  // Scan the ordered transcript; context eligibility is a harness decision, not an indexed view.
+  for (const row of sql.exec<{ message_json: string; in_context: number }>("SELECT message_json, in_context FROM minimal_bash_messages ORDER BY sequence")) {
+    if (!row.in_context) continue;
+    bytes += utf8Bytes(row.message_json);
     if (bytes > MAX_OPERATION_INPUT_BYTES) throw new HarnessFailure("OPERATION_INPUT_TOO_LARGE", "Conversation exceeds the 8 MiB operation input limit. Compaction is not implemented.");
-    const message = JSON.parse(readMessageText(sql, row.message_json)) as LlmMessage;
+    const message = JSON.parse(row.message_json) as LlmMessage;
     if (message.role === "custom") throw new Error("Harness lifecycle messages must not enter model context.");
+    messages.push(message);
+  }
+  // Proposed messages are included before their owning transition commits.
+  for (const message of appended) {
+    if (message.role === "custom") throw new Error("Lifecycle messages must not enter model context.");
     messages.push(message);
   }
   const model = OPENAI_MODELS[config.modelId];
   const input = parseJsonValue({ previousJobId: null, accountId: config.accountId, modelId: config.modelId,
-    messages, tools: [PI_BASH_TOOL], providerOptions: {
+    instructions: createInstructions(config), messages, tools: [PI_BASH_TOOL], providerOptions: {
       store: false, reasoning: { effort: config.reasoning, summary: "auto" }, include: ["reasoning.encrypted_content"],
       prompt_cache_key: Array.from(sessionId).slice(0, 64).join(""), max_output_tokens: model.maxTokens,
       tool_choice: "auto", parallel_tool_calls: false,
