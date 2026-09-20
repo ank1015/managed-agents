@@ -1,7 +1,6 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { parseBashSubmission, parseLlmSubmission, parseProviderStatusQuery } from "@managed-agents/contracts";
 import type { OperationOutcome, LlmSubmission } from "@managed-agents/contracts";
-import { recoverStatuses, publishStatus } from "../src/status.ts";
 import type { Env } from "../src/types.ts";
 
 interface TestEnv extends Env { JOBS: DurableObjectNamespace<FakeJobs> }
@@ -37,14 +36,14 @@ export class FakeJobs extends DurableObject<TestEnv> {
     if (!deliver) return "{}";
     const request = JSON.parse(row.serialized) as LlmSubmission;
     const ns = this.env.MINIMAL_BASH_SESSIONS;
-    return ns.get(ns.idFromName(request.destination.sessionId)).sessionRequest(JSON.stringify({ action: "acceptCompletion", value: {
+    return JSON.stringify(await ns.get(ns.idFromName(request.destination.sessionId)).sessionRequest({ action: "acceptCompletion", value: {
       operationId: request.submission.operationId, submissionId: request.submission.submissionId,
       provider: request.submission.request.provider, jobId: id, outcome,
     } }));
   }
 }
 export class FakeOperations extends WorkerEntrypoint<TestEnv> {
-  submit(value: string) { return this.env.JOBS.get(this.env.JOBS.idFromName("jobs")).submit(value); }
+  async submit(value: unknown): Promise<unknown> { return { result: JSON.parse(await this.env.JOBS.get(this.env.JOBS.idFromName("jobs")).submit(JSON.stringify(value))) }; }
   get(value: string) { return this.env.JOBS.get(this.env.JOBS.idFromName("jobs")).get(value); }
 }
 export default {
@@ -56,14 +55,9 @@ export default {
       const body = await request.json() as { id: string; outcome: OperationOutcome; deliver?: boolean };
       return new Response(await jobs.finish(body.id, JSON.stringify(body.outcome), body.deliver));
     }
-    if (path === "/recover") { await recoverStatuses(env); return Response.json({ ok: true }); }
-    if (path === "/stale-status") {
-      const body = await request.json() as { sessionId: string };
-      await publishStatus(env, body.sessionId, "running", 1); return Response.json({ ok: true });
-    }
     if (path === "/internal") {
       const body = await request.json() as { sessionId: string; command: unknown };
-      return new Response(await env.MINIMAL_BASH_SESSIONS.get(env.MINIMAL_BASH_SESSIONS.idFromName(body.sessionId)).sessionRequest(JSON.stringify(body.command)));
+      return Response.json(await env.MINIMAL_BASH_SESSIONS.get(env.MINIMAL_BASH_SESSIONS.idFromName(body.sessionId)).sessionRequest(body.command));
     }
     return new Response(null, { status: 404 });
   },

@@ -3,13 +3,13 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { Log, LogLevel, Miniflare } from "miniflare";
-import type { LlmInput, LlmSubmission, OperationOutcome } from "@managed-agents/contracts";
+import type { JsonValue, LlmInput, LlmSubmission, OperationOutcome } from "@managed-agents/contracts";
 
 export const config = { provider: "openai", modelId: "gpt-5.6-sol", accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", cwd: "/workspace" };
 export const token = "test-backend-token";
 export type Job = { id: string; outcome: string | null; submissions: number; request: LlmSubmission };
 export type Page = { messages: { sequence: number; message: { role: string; tag?: string; content?: unknown[] }; inContext: boolean }[]; nextCursor: number | null;
-  state: { status: string; phase: string; runId: string; pendingMessageCount: number; activeOperationId: string | null; processingBlocked: boolean } };
+  state: { status: string; phase: string; runId: string; pendingMessageCount: number; activeOperationId: string | null; processingBlocked: boolean; error: JsonValue | null } };
 export async function bundle(path: string) {
   const result = await build({ entryPoints: [fileURLToPath(new URL(path, import.meta.url))], bundle: true, format: "esm", platform: "browser",
     target: "es2022", external: ["cloudflare:workers"], write: false });
@@ -18,11 +18,11 @@ export async function bundle(path: string) {
 export async function startStack(persistPath?: string) {
   const [api, host, fixture] = await Promise.all([bundle("../../agent-api/src/index.ts"), bundle("../src/index.ts"), bundle("./fixture.ts")]);
   const common = { modules: true, compatibilityDate: "2026-07-30", outboundService: () => { throw new Error("Test must not call external services."); } };
-  const ns = { MINIMAL_BASH_SESSIONS: { className: "MinimalBashSession", scriptName: "host" } };
+  const ns = { MINIMAL_BASH_SESSIONS: { className: "MinimalBashSessionV7", scriptName: "host" } };
   const d1Databases = { SESSION_DIRECTORY: "minimal-bash-directory" };
   const app = new Miniflare({ log: new Log(LogLevel.ERROR), workers: [
     { ...common, name: "api", script: api, d1Databases, durableObjects: ns, bindings: { BACKEND_TOKEN: token } },
-    { ...common, name: "host", script: host, d1Databases, durableObjects: { MINIMAL_BASH_SESSIONS: { className: "MinimalBashSession", useSQLite: true } },
+    { ...common, name: "host", script: host, d1Databases, durableObjects: { MINIMAL_BASH_SESSIONS: { className: "MinimalBashSessionV7", useSQLite: true } },
       serviceBindings: { LLM: { name: "operations", entrypoint: "FakeOperations" }, BASH: { name: "operations", entrypoint: "FakeOperations" } } },
     { ...common, name: "operations", script: fixture, d1Databases, durableObjects: { ...ns, JOBS: { className: "FakeJobs", useSQLite: true } } },
   ], ...(persistPath ? { durableObjectsPersist: `${persistPath}/objects`, d1Persist: `${persistPath}/d1` } : {}) });
@@ -41,7 +41,7 @@ export async function startStack(persistPath?: string) {
     return { app, db, request,
       async create(key: string, overrides = {}) {
         const result = await request<{ session: { identity: { sessionId: string } } }>("/v1/sessions", "POST", {
-          requestId: key, harness: { id: "minimal-bash", version: "v1" }, config: { ...config, ...overrides }, metadata: { title: key },
+          requestId: key, harness: { id: "minimal-bash", version: "v7" }, config: { ...config, ...overrides }, metadata: { title: key },
         }, 201); return result.session.identity.sessionId;
       },
       async control<T = Record<string, unknown>>(path: string, body?: unknown): Promise<T> {
