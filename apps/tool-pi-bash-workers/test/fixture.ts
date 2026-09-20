@@ -1,20 +1,27 @@
 import { DurableObject } from "cloudflare:workers";
-import { PI_BASH_OPERATION, parseBashInput, parseJsonValue, parseProviderSubmitResult, parseProviderStatusResult } from "@managed-agents/contracts";
-import type { EventBody, JsonValue, BashWorkerBinding, GatewayEventReceiverBinding } from "@managed-agents/contracts";
+import { PI_BASH_OPERATION, parseBashInput, parseJsonValue, parseProviderSubmitReply, parseSessionCommand, parseGatewayEventReply } from "@managed-agents/contracts";
+import type { EventBody, JsonValue, BashWorkerBinding, GatewayEventReceiverBinding, SessionReply } from "@managed-agents/contracts";
 import type { HarnessDefinition } from "@managed-agents/harness-api";
 import { SessionDriver } from "@managed-agents/session-runtime";
-import { BashService } from "../src/service.ts";
-import handler from "../src/index.ts";
 import type { Env } from "../src/types.ts";
 
 interface TestEnv extends Env { BASH: BashWorkerBinding; BASH_EVENTS: GatewayEventReceiverBinding; SESSIONS: DurableObjectNamespace<TestSession> }
 const harness: HarnessDefinition<JsonValue, EventBody> = {
   identity: { id: "bash-test", version: "v1" }, operations: [PI_BASH_OPERATION],
-  migrations: [{ version: 1, statements: ["CREATE TABLE test_results (event_id TEXT PRIMARY KEY, payload TEXT NOT NULL)"] }],
+  schema: ["CREATE TABLE test_results (event_id TEXT PRIMARY KEY, payload TEXT NOT NULL)"],
   parseConfig(value) { return parseJsonValue(parseBashInput(value)); },
   parseInput: event => event,
-  initialize(ctx) { ctx.requestOperation({ ...PI_BASH_OPERATION, input: ctx.config as JsonValue }); },
-  handle(input, ctx) { ctx.sql.exec("INSERT INTO test_results VALUES (?, ?)", input.eventId, JSON.stringify(input.event)); },
+  initialize() {},
+  handle(input, ctx) {
+    return { changes: input.event.type === "start" ? null : { eventId: input.eventId, event: input.event },
+      operations: input.event.type === "start" ? [{ key: "request", ...PI_BASH_OPERATION, input: ctx.config as JsonValue }] : [] };
+  },
+  apply(changes, ctx) {
+    if (changes) {
+      const c = changes as { eventId: string; event: unknown };
+      ctx.sql.exec("INSERT INTO test_results VALUES (?, ?)", c.eventId, JSON.stringify(c.event));
+    }
+  },
 };
 /** Test-only harness: exercises the production driver, RPC adapter, SQLite, and admission receipt. */
 export class TestSession extends DurableObject<TestEnv> {
@@ -23,56 +30,54 @@ export class TestSession extends DurableObject<TestEnv> {
     super(ctx, env);
     this.driver = new SessionDriver(ctx.storage, harness, {
       providers: { "tool-pi-bash": {
-        submit: async submission => parseProviderSubmitResult(JSON.parse(await env.BASH.submit(JSON.stringify({
+        submit: async submission => parseProviderSubmitReply(await env.BASH.submit({
           destination: { routeKey: "test-v1", sessionId: this.driver.getSession().identity.sessionId }, submission,
-        })))),
-        get: async query => parseProviderStatusResult(JSON.parse(await env.BASH.get(JSON.stringify(query)))),
+        })),
       } },
-      policy: { reconcileMs: 3_600_000, retryBaseMs: 50, retryMaxMs: 100 },
+      policy: { retryBaseMs: 50, retryMaxMs: 100 },
       waitUntil: promise => ctx.waitUntil(promise),
     });
   }
   async start(sessionId: string, serialized: string): Promise<string> {
-    return JSON.stringify(await this.driver.initialize({ session: { sessionId, harness: harness.identity }, config: JSON.parse(serialized) }));
+    const initialized = await this.driver.initialize({ session: { sessionId, harness: harness.identity }, config: JSON.parse(serialized) });
+    await this.driver.appendInput({ eventId: "start", event: { type: "start", payload: null } });
+    return JSON.stringify(initialized);
   }
   alarm() { return this.driver.alarm(); }
-  async sessionRequest(serialized: string): Promise<string> {
+  async sessionRequest(value: unknown): Promise<SessionReply<unknown>> {
+    const delay = await this.ctx.storage.get<number>("delay") ?? 0;
+    if (delay) await new Promise(resolve => setTimeout(resolve, delay));
     const fail = await this.ctx.storage.get<number>("fail") ?? 0;
     if (fail) { await this.ctx.storage.put("fail", fail - 1); throw new Error("Injected delivery failure."); }
-    const command = JSON.parse(serialized);
+    const command = parseSessionCommand(value);
     if (command.action !== "acceptCompletion") throw new Error("Unexpected action.");
     const receipt = await this.driver.acceptCompletion(command.value);
     const lose = await this.ctx.storage.get<number>("lose") ?? 0;
     if (lose) { await this.ctx.storage.put("lose", lose - 1); throw new Error("Injected lost durable receipt."); }
-    return JSON.stringify({ ok: true, value: receipt });
+    const invalid = await this.ctx.storage.get<number>("invalid") ?? 0;
+    if (invalid) { await this.ctx.storage.put("invalid", invalid - 1); return { ok: true, value: { ...receipt, operationId: "wrong" } }; }
+    return { ok: true, value: receipt };
   }
-  async faults(fail: number, lose: number) { await this.ctx.storage.put({ fail, lose }); }
+  async faults(fail: number, lose: number, invalid: number, delay: number) { await this.ctx.storage.put({ fail, lose, invalid, delay }); }
   snapshot() {
-    const rows = this.ctx.storage.sql.exec<{ operation_id: string }>("SELECT operation_id FROM runtime_operations").toArray();
-    return JSON.stringify({ operations: rows.map(row => this.driver.getOperation(row.operation_id)),
-      outbox: this.ctx.storage.sql.exec("SELECT * FROM runtime_outbox").toArray(),
-      results: this.ctx.storage.sql.exec("SELECT * FROM test_results").toArray() });
+    const results = this.ctx.storage.sql.exec<{ event_id: string; payload: string }>("SELECT * FROM test_results").toArray();
+    const completed = results.map(row => JSON.parse(row.payload).payload).map(p => ({ ...p, submissionId: p.operationId }));
+    return JSON.stringify({ admittedCompletions: this.ctx.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM runtime_inbox WHERE event_id LIKE 'runtime:%'").one().n, progress: this.driver.getProcessingStatus(), operations: [...this.driver.getPendingOperations().map(p => ({ ...p, submissionId: p.operationId, outcome: null })), ...completed],
+      // Assert the removed table is absent, not that an old outbox happened to drain.
+      outbox: this.ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE name = 'runtime_outbox'").toArray(), results });
   }
 }
 export default {
   async fetch(request, env, ctx) {
     try {
       const path = new URL(request.url).pathname;
-      const body = await request.json() as { sessionId: string; input: JsonValue; fail?: number; lose?: number };
-      if (path === "/submit" || path === "/get") return new Response(await env.BASH[path.slice(1) as "submit" | "get"](JSON.stringify(body)));
-      if (path === "/event") return new Response(await env.BASH_EVENTS.acceptGatewayEvent(JSON.stringify(body)));
-      if (path === "/admit") {
-        const admitted = await new BashService(env).admitGatewayEvent(body);
-        return Response.json(admitted.receipt);
-      }
-      if (path === "/callback-submit") return new Response(await (env.BASH_EVENTS as unknown as BashWorkerBinding).submit(JSON.stringify(body)));
-      if (path === "/recover") {
-        await handler.scheduled({} as ScheduledController, env); return Response.json({ ok: true });
-      }
-      if (path === "/process") return Response.json({ delay: await new BashService(env).process(body as never) ?? null });
+      const body = await request.json() as { sessionId: string; input: JsonValue; fail?: number; lose?: number; invalid?: number; delay?: number };
+      if (path === "/submit") return Response.json(parseProviderSubmitReply(await env.BASH.submit(body)));
+      if (path === "/event") return Response.json(parseGatewayEventReply(await env.BASH_EVENTS.acceptGatewayEvent(body)));
+      if (path === "/callback-submit") return Response.json(await (env.BASH_EVENTS as unknown as BashWorkerBinding).submit(body));
       const session = env.SESSIONS.get(env.SESSIONS.idFromName(body.sessionId));
       if (path === "/start") return new Response(await session.start(body.sessionId, JSON.stringify(body.input)));
-      if (path === "/faults") { await session.faults(body.fail ?? 0, body.lose ?? 0); return Response.json({ ok: true }); }
+      if (path === "/faults") { await session.faults(body.fail ?? 0, body.lose ?? 0, body.invalid ?? 0, body.delay ?? 0); return Response.json({ ok: true }); }
       if (path === "/snapshot") return new Response(await session.snapshot());
       return new Response(null, { status: 404 });
     } catch (error) { return Response.json({ error: String(error) }, { status: 500 }); }
