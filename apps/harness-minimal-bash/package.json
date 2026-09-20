@@ -10,7 +10,7 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
     "test": "node --test test/*.test.ts"
   },
-  "dependencies": {
+  "dependencies": { "@managed-agents/diagnostics": "workspace:*",
     "@managed-agents/harness-minimal-bash": "workspace:*",
     "@managed-agents/contracts": "workspace:*",
     "@managed-agents/session-runtime": "workspace:*"

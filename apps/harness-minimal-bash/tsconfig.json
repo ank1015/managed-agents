@@ -4,5 +4,5 @@
     "lib": ["ES2022"],
     "types": ["@cloudflare/workers-types"]
   },
-  "include": ["src/**/*.ts", "test/fixture.ts"]
+  "include": ["src/**/*.ts", "test/fixture.ts", "test/storage-profile.ts"]
 }
