@@ -10,13 +10,15 @@
     { "pattern": "managed-agents-api.acentric.dev", "custom_domain": true }
   ],
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false }
   },
   "d1_databases": [
     {
       "binding": "SESSION_DIRECTORY",
-      "database_name": "managed-agents-session-directory",
-      "database_id": "73c0f0fd-b07d-4358-9a04-1f39a3e36d0f",
+      "database_name": "managed-agents-session-directory-v2",
+      "database_id": "f3073080-5ca3-44f1-9466-ae5fe6524fff",
       "migrations_dir": "migrations"
     }
   ],
@@ -24,8 +26,8 @@
     "bindings": [
       {
         "name": "MINIMAL_BASH_SESSIONS",
-        "class_name": "MinimalBashSession",
-        "script_name": "managed-agents-harness-minimal-bash"
+        "class_name": "MinimalBashSessionV7",
+        "script_name": "managed-agents-harness-minimal-bash-v7"
       }
     ]
   }

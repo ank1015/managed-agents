@@ -11,7 +11,7 @@
     "test": "node --test test/*.test.ts",
     "db:migrate:local": "wrangler d1 migrations apply SESSION_DIRECTORY --local"
   },
-  "dependencies": {
+  "dependencies": { "@managed-agents/diagnostics": "workspace:*",
     "@managed-agents/contracts": "workspace:*"
   },
   "devDependencies": {
