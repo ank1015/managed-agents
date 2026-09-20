@@ -1,8 +1,8 @@
 import { ContractException, isAbsoluteMachinePath, parseEventBody, parseJsonValue, parseLlmMessage, parseUuid } from "@managed-agents/contracts";
 import type { EventBody, JsonValue, LlmMessage } from "@managed-agents/contracts";
 
-export const MINIMAL_BASH_IDENTITY = Object.freeze({ id: "minimal-bash", version: "v1" });
-export const MINIMAL_BASH_ROUTE = "minimal-bash-v1";
+export const MINIMAL_BASH_IDENTITY = Object.freeze({ id: "minimal-bash", version: "v7" });
+export const MINIMAL_BASH_ROUTE = "minimal-bash-v7";
 export const REASONING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type ReasoningLevel = typeof REASONING_LEVELS[number];
 // Snapshot of ../llm-providers/packages/provider-openai/src/models.ts. No runtime cross-repo imports.
