@@ -1,118 +1,71 @@
-# Shared execution-gateway callback worker
+# Stateless execution-gateway callback router
 
-One public callback receiver for the dedicated execution-gateway user. Routes signed terminal-job notifications to private tool worker bindings using the gateway's echoed `clientContext`. This app does not submit gateway jobs, fetch results, format tool output, or contact session Durable Objects. It has no gateway API key or session namespace bindings.
+The dedicated execution-gateway user has one common callback URL: `POST /webhooks/execution-gateway`. This worker verifies its signature, forwards inline results to an allowlisted tool receiver, and acknowledges only after that receiver confirms **durable session admission**.
 
-## Contract and ownership
+**Deployed on 2026-09-20.** This replaces the old D1/Queue/cron router and notification-only v2 contract. The old consumer is detached and bindings/cron are removed; the database and Queue remain intact and unbound. The dedicated execution user now uses v3 callbacks. See the [deployment report](../../DEPLOYMENT.md) and [stateless bash worker](../tool-pi-bash-workers/README.md).
 
-Each tool reserves its own durable gateway-call reference **before** submitting a job, and attaches:
-
-```json
-{
-  "clientContext": {
-    "receiver": "tool-pi-bash-v1",
-    "reference": "<stable per-gateway-call reference>"
-  }
-}
-```
-
-For bash the reference is its runtime-generated `submissionId`; a multi-step tool should give each gateway call its own stable reference. The tool worker generates these values, not the model or harness input. The gateway persists the opaque object with the job, includes it in idempotency conflict checks, and echoes it on all terminal callbacks, including pre-execution failure/unknown outcomes.
-
-The gateway accepts arbitrary JSON objects, but this router's convention is deliberately narrower: exactly `receiver` and `reference`. Receiver keys match `[a-z][a-z0-9-]{0,99}`; references are nonempty strings up to 2,048 characters. They are identifiers, not URLs, commands, results or secrets. Do not change them on a submission retry.
-
-The router accepts gateway payload version **2**:
+## Signed contract
 
 ```ts
 {
-  schemaVersion: 2,
-  eventId: string, jobId: string, machineId: string,
+  schemaVersion: 3,
+  eventId, jobId, machineId, idempotencyKey,
+  runtimeGenerationId: string | null,
   type: "job.succeeded" | "job.failed" | "job.unknown",
-  completedAt: string,
-  clientContext: { receiver: string, reference: string },
+  completedAt,
+  clientContext: { receiver: string, /* opaque tool-owned routing fields */ },
+  response: JsonValue,
+  error: JsonValue
 }
 ```
 
-Shared parsers/types are in `packages/contracts/src/execution-gateway.ts`. Missing context, v1 payloads, extra fields and malformed IDs are rejected. The whole webhook body is capped at 16 KiB. This is not a generic forwarder for arbitrary gateway users or arbitrary destinations: deploy a separate instance/database/queue for each gateway user/environment.
+Both response and error must be present, including explicit nulls. Failed jobs can contain an execution-protocol error response rather than a gateway error; semantic interpretation belongs to the tool. Unknown outcomes must not trigger automatic command re-execution.
 
-## Admission and durable delivery
+The router requires a well-formed receiver key but does not hardcode bash's remaining context fields. It forwards them unchanged; it never interprets a context URL or follows arbitrary destinations. The bash adapter validates its exact context and job/machine/run/generation relationships.
 
-1. Verify the gateway's HMAC over the original body, header event ID and timestamp (five-minute freshness window), using the current or optional previous signing secret.
-2. Insert the immutable event into D1 before acknowledging HTTP 204. Identical event-ID retries are safe; conflicting content returns 503 and does not replace the original.
-3. Route the retained event immediately in `waitUntil`. A failed delivery is queued with backoff; if enqueueing also fails, D1 admission still makes the event recoverable by the scheduled sweep.
-4. Resolve `clientContext.receiver` through `CALLBACK_ROUTES`, then invoke only the configured private `acceptGatewayEvent` binding. Never construct an HTTP URL from context or forward old HMAC headers.
-5. Require a correlated durable receipt before marking delivery complete. On RPC failure/lost receipt/bad receipt, retain the event and retry with the same identity.
+## Delivery and acknowledgement
 
-The receiving tool exposes `GatewayEventReceiverBinding`:
+1. Enforce POST, JSON content type and a finite 18 MiB raw body cap (the old 16 KiB notification cap is removed).
+2. Verify fresh timestamp (five-minute skew), raw-body HMAC and header/body event identity. Current and previous signing secrets support rotation.
+3. Validate the complete v3 event and resolve `clientContext.receiver` through `CALLBACK_ROUTES`.
+4. Call the receiver's private structured `acceptGatewayEvent(event)` RPC.
+5. Validate its `{ receipt: { status: "accepted", eventId, jobId, clientContext } }` reply against the forwarded event.
+6. Return 204 only after that receipt. Bash issues it only after the DO commits its inbox admission, not after harness processing.
 
-```ts
-acceptGatewayEvent(serializedEvent: string): Promise<string>
-// JSON receipt, only after durable tool-side admission:
-{
-  status: "accepted",
-  eventId: string,
-  jobId: string,
-  clientContext: { receiver: string, reference: string },
-}
-```
+No D1 calls, Queue messages, local event IDs/leases/retries, scheduled repair or background `waitUntil` forwarding occur. There is no gateway result fetch or gateway credential here. The tool adapter reads the signed inline result.
 
-The receiver must validate its receiver key and correlate reference, machine and any known job ID against its retained reservation. It must durably schedule processing and make repeated admission safe before returning the receipt. A 10-second RPC timeout cannot cancel late admission, so duplicate safety is required. A callback is a wake-up, not authoritative command output: tools still fetch/validate gateway results and deliver their own session completions.
+Unknown/unavailable routes, receiver errors, mismatched receipts or deadline expiry return 503 for gateway retry. Authentication failure returns 401; invalid JSON/event shape returns 400; a body beyond the transport cap returns 413 and is not admitted. These nonretryable protocol/configuration failures need operator attention. Health returns 200 but is not readiness.
 
-`tool-pi-bash-workers` supplies a separate callback-only `PiBashCallbacks` entrypoint. It atomically binds the job and marks the operation due without a second tool-side event table. The submission/status entrypoint `PiBash` is not exposed to this router.
+The entire callback has one eight-second deadline, below the gateway's ten-second HTTP timeout. Abort cancels stalled body reads. RPC may finish after timeout; the receiver must deduplicate and must never treat transport timeout as proof of non-admission.
 
-`migrations/0001_initial.sql` creates only `gateway_callback_events`: event/job/machine/context/type/time, admission/delivery timestamps, retry deadline, attempts, lease token/expiry and last error. It contains no tool/session state or commands/output. No tool has access to this database; the router has no access to tool databases. There is no separate job-to-tool mapping database because routing arrives in the authenticated event.
+## Recovery and security
 
-Leases last 60 seconds and fence stale completions. Retry backoff is bounded at five minutes. Queue is a retry/recovery path (batch size 1, zero batch timeout), and the once-a-minute sweep queues up to 100 due events to recover interrupted work and expired leases after restart. Syntactically valid events for unconfigured receivers are persisted and stay pending with `last_error`; fixing the binding/route allows recovery. Never silently discard them or send them to a default tool. Monitor undelivered count, oldest due time, repeated errors and unknown receivers. No automatic receipt pruning or permanent abandonment policy is implemented yet.
+The gateway alone owns retries and manual redelivery. Its inspected implementation allows eight attempts within a maximum 24-hour window; exhaustion can leave a session waiting until redelivery. There is no independent router sweep to recover missing callbacks. Gateway delivery visibility is now authoritative; no router delivery table exists.
 
-## Adding a tool
+Knowing a session/job ID does not authorize delivery. The public boundary requires HMAC verification; tools expose callback-only private bindings and validate correlation; the DO validates the operation and outcome hash. Keep callback bindings restricted to trusted workers. Body/context/result are authenticated together.
 
-Implement the private admission method, then add a stable receiver key and callback-only service binding in this app's Wrangler config:
+Bash sends host-owned context with receiver, routeKey, sessionId, operationId, submissionId, machineId and timeoutSeconds. Model/harness tool input cannot supply it. Other tools can adopt their own context under their own allowlisted receiver.
 
-```jsonc
-"vars": { "CALLBACK_ROUTES": "{\"tool-pi-bash-v1\":\"BASH_EVENTS\",\"tool-patch-v1\":\"PATCH_EVENTS\"}" },
-"services": [
-  { "binding": "BASH_EVENTS", "service": "managed-agents-tool-pi-bash", "entrypoint": "PiBashCallbacks" },
-  // Example for a future patch worker; not implemented or configured in this repo yet.
-  { "binding": "PATCH_EVENTS", "service": "my-patch-worker", "entrypoint": "PatchCallbacks" }
-]
-```
+## Configuration
 
-Keep old receiver keys mapped while their jobs/events drain. Only grant callback bindings to trusted routers; possession of IDs is not authentication. The service-binding boundary is the tool-side authentication mechanism, and the router is responsible for verifying gateway signatures. Existing tool-side polling remains as an independent recovery path. Session-runtime and agent-api are unchanged.
+- `EXECUTION_GATEWAY_WEBHOOK_SECRET`: dedicated user's signing secret.
+- Optional `EXECUTION_GATEWAY_PREVIOUS_WEBHOOK_SECRET` for rotation.
+- `CALLBACK_ROUTES`: receiver key → existing service-binding name.
+- `BASH_EVENTS`: private `PiBashCallbacks` entrypoint on the bash worker.
+- Existing public domain `execution-callbacks.acentric.dev`; Workers.dev/preview URLs remain disabled.
 
-## Deployment
+No gateway API key, DO namespace, D1 database or Queue binding is required. The cron list is explicitly empty.
 
-No resources are provisioned by tests/build. From this directory:
+## Deployment and breaking rollout
 
-```sh
-pnpm exec wrangler d1 create managed-agents-execution-callbacks
-pnpm exec wrangler queues create managed-agents-execution-callbacks
-# Replace database_id in wrangler.jsonc before migrating.
-pnpm exec wrangler d1 migrations apply CALLBACK_DB --remote
-pnpm exec wrangler secret put EXECUTION_GATEWAY_WEBHOOK_SECRET
-pnpm exec wrangler deploy
-```
+1. Keep new traffic paused while draining all old bash operations, uncertain source retries, router notifications and gateway deliveries. The gateway snapshots the payload version when a job finishes; changing the user's version does not rewrite old retained events.
+2. If the gateway user was already switched to v3 while old stateful jobs remain, resolve that mixed state before replacing the receiver. Old context contains only receiver/reference and cannot route statelessly. Do not invent replacement job identities or mark old work delivered.
+3. Once drained, detach the old router and bash Queue consumers. Deploy both new adapters together during maintenance. Verify their database/Queue bindings are absent and cron lists are empty.
+4. Coordinate the v6 host/API/operation namespace cutover. Preserve old v5 code/data. Configure the dedicated execution user to `webhookPayloadVersion: 3` before sending new work; retain its callback URL and signing secret.
+5. Verify a real execution callback only reaches delivered status after DO admission, and that duplicates, command failures and a full harness run behave correctly. Restore traffic only after checks.
 
-Before deploying, configure a public HTTPS route/custom domain and the correct tool service names/bindings. Deploy the tool's callback entrypoint first. Configure the execution gateway's dedicated user (admin API or `PATCH /v1/me`) with:
-
-```json
-{
-  "callbackUrl": "https://<callback-worker-domain>/webhooks/execution-gateway",
-  "webhookPayloadVersion": 2
-}
-```
-
-Allow that exact origin in the gateway's `WEBHOOK_ALLOWED_ORIGINS`. Put the user's webhook signing secret here, not its API key. API keys stay with submitting tool workers. Set optional `EXECUTION_GATEWAY_PREVIOUS_WEBHOOK_SECRET` while rotating, then remove it when older signed deliveries drain. Keep any previous callback URL reachable until its captured deliveries drain.
-
-The only HTTP endpoints are `GET /health` (liveness) and `POST /webhooks/execution-gateway`. Preview/worker.dev URLs are disabled by default. Verify a real job reaches both the router's `delivered_at` and the tool/session's completion before production use.
-
-### Breaking rollout
-
-This replaces the bash worker's public webhook, signing-secret settings and `bash_webhook_events` schema; fresh bash databases use the revised initial migration. No live database has been altered, and rerunning an edited initial migration does not upgrade an existing database. If the old worker was deployed, drain outstanding submissions/jobs/callbacks before switching and plan the database cleanup separately—do not reset a database containing active work. Retrying an old job without context using the same idempotency key **with** context is a gateway conflict. Retained old webhook payloads have no routing context and are intentionally unsupported by this router. New submissions must use the updated tool and gateway contracts together.
+The deployment changed the dedicated user's payload setting to v3 without deleting remote resources. Retain old database/Queue resources unbound for separately approved cleanup. Old schemas/context/private RPCs are deliberately unsupported after the cutover.
 
 ## Checks
 
-```sh
-pnpm --filter @managed-agents/execution-gateway-callback-workers check
-pnpm --filter @managed-agents/tool-pi-bash-workers check
-pnpm check
-```
-
-Local tests use real workerd service RPC, D1 and queues. Router tests cover two isolated receiver bindings, authentication/rotation, conflicting IDs, outage/lost-receipt recovery, invalid receipts, unknown routes, concurrent delivery and restart after failed enqueue. Bash tests exercise the entire router → private tool admission → gateway result → SQLite session path, including early callbacks, independent databases and durable failure recovery. No live gateway/cloud deployment is performed.
+`pnpm --filter @managed-agents/execution-gateway-callback-workers check` covers multiple allowlisted receivers, signature/result tampering, malformed contracts, receiver outage, lost/invalid receipts, large inline payloads and gateway redelivery after process restart, with no router D1/Queue bindings. Bash integration tests add the production tool worker and real session runtime, including early callbacks and the complete deadline. Builds are dry-run only.

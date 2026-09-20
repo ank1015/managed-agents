@@ -10,7 +10,7 @@
     "test": "node --test test/*.test.ts",
     "check": "pnpm typecheck && pnpm test && pnpm build"
   },
-  "dependencies": { "@managed-agents/contracts": "workspace:*" },
+  "dependencies": { "@managed-agents/diagnostics": "workspace:*", "@managed-agents/contracts": "workspace:*" },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260910.1",
     "esbuild": "0.27.3",
