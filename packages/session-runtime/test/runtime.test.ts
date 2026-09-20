@@ -8,7 +8,7 @@ import { build } from "esbuild";
 import { Miniflare } from "miniflare";
 import type { InitializeSessionResult, InputReceipt, SessionInfo } from "@managed-agents/contracts";
 import type { ProcessNextResult } from "../src/index.ts";
-import { migrations } from "./fixture.ts";
+import { schema } from "./fixture.ts";
 
 let script: string;
 let mf: Miniflare;
@@ -86,11 +86,15 @@ test("initialization stores defaults and retries original config without revalid
   assert.equal(await count(c), 0);
 });
 
-test("initialization conflicts include original config, session and harness", async () => {
+test("initialization checks identity; API owns request-content conflicts", async () => {
   const c = await client("conflicts");
   await c.fails("initialize", request(null), "INVALID_CONFIG");
   await c.call("initialize", request());
-  await c.fails("initialize", request({ label: "default" }), "INITIALIZATION_CONFLICT");
+  const duplicate = await c.call<InitializeSessionResult>("initialize", request({ label: "different" }));
+  assert.equal(duplicate.duplicate, true);
+  assert.deepEqual(duplicate.session.config, { label: "default", settings: { enabled: true } });
+  const columns = await c.sql<{ name: string }>("PRAGMA table_info(runtime_session)");
+  assert.equal(columns.some(column => column.name === "original_config_json"), false);
   for (const session of [
     { ...request().session, sessionId: "other" },
     { ...request().session, harness: { id: "other", version: "v1" } },
@@ -103,7 +107,7 @@ test("failed initialization rolls back session and harness state; retry succeeds
   await c.call("configure", { init: "fail" });
   await c.fails("initialize", request(), /initialization failed/);
   for (const table of ["runtime_session", "h_counter"]) assert.deepEqual(await c.sql(`SELECT * FROM ${table}`), []);
-  assert.equal((await c.sql("SELECT * FROM runtime_migrations")).length, 4);
+  assert.deepEqual(await c.sql("SELECT name FROM sqlite_master WHERE name = 'runtime_migrations'"), []);
   await c.fails("expired-sql", undefined, /expired/);
   await c.call("configure", {});
   await c.call("initialize", request());
@@ -145,6 +149,34 @@ test("admission deduplicates structurally before validation, even after consumpt
   }
   assert.equal((await stats(c)).inputCalls, 1);
   assert.equal(await count(c), 1);
+  const rows = await c.sql<{ event_json: null; event_hash: string; consumed_at: number }>(
+    "SELECT event_json, event_hash, consumed_at FROM runtime_inbox");
+  assert.equal(rows[0]!.event_json, null);
+  assert.match(rows[0]!.event_hash, /^[a-f0-9]{64}$/);
+  assert.ok(rows[0]!.consumed_at > 0);
+});
+
+test("consumption atomically releases large inbox payloads; hashes retain retry identity", async () => {
+  const c = await client("consumed-inline");
+  await c.call("initialize", request());
+  const event = input("large", "record", { text: "😀".repeat(100_000) });
+  const receipt = await c.call<InputReceipt>("appendInput", event);
+  const before = await c.sql("SELECT event_json FROM runtime_inbox");
+  assert.deepEqual(before, [{ event_json: JSON.stringify(event.event) }]);
+  assert.deepEqual(await c.sql("SELECT name FROM sqlite_master WHERE name LIKE '%chunks%'"), []);
+  await c.sql(`CREATE TRIGGER reject_consumption BEFORE UPDATE OF consumed_at ON runtime_inbox
+    BEGIN SELECT RAISE(ABORT, 'consumption failed'); END`);
+  await c.fails("processNext", undefined, /consumption failed/);
+  assert.equal(await count(c), 0);
+  assert.deepEqual(await c.sql("SELECT event_json FROM runtime_inbox"), before);
+  assert.deepEqual(await c.sql("SELECT consumed_at FROM runtime_inbox"), [{ consumed_at: null }]);
+  await c.sql("DROP TRIGGER reject_consumption");
+  await c.call("processNext");
+  assert.equal(await count(c), 1);
+  assert.deepEqual(await c.sql("SELECT event_json FROM runtime_inbox"), [{ event_json: null }]);
+  await c.call("configure", { input: "reject" }); // Reconstruct from retained metadata, not the payload.
+  assert.deepEqual(await c.call("appendInput", event), { ...receipt, duplicate: true });
+  await c.fails("appendInput", input("large", "record", { text: "changed" }), "INPUT_CONFLICT");
 });
 
 test("invalid admission and parser rewrites allocate nothing", async () => {
@@ -152,6 +184,7 @@ test("invalid admission and parser rewrites allocate nothing", async () => {
   await c.call("initialize", request());
   await c.fails("appendInput", { ...input("a"), sequence: 1 }, "INVALID_REQUEST");
   await c.fails("appendInput", input("a", "unsupported"), "INVALID_INPUT");
+  await c.fails("appendInput", input("oversized", "record", { text: "😀".repeat(500_000) }), "INVALID_INPUT");
   for (const mode of ["mutate", "rewrite", "async"]) {
     await c.call("configure", { input: mode });
     await c.fails("appendInput", input("a"));
@@ -263,81 +296,64 @@ test("session state and event IDs are isolated by Durable Object", async () => {
 test("sequence exhaustion fails atomically at the safe integer boundary", async () => {
   const c = await client("sequence-limit");
   await c.call("initialize", request());
-  await c.sql("UPDATE runtime_session SET last_input_sequence = 9007199254740990");
+  await c.sql(`INSERT INTO runtime_inbox (sequence, event_id, received_at, event_hash, consumed_at)
+    VALUES (9007199254740990, 'retained', 0, '${"0".repeat(64)}', 0)`);
   assert.equal((await c.call<InputReceipt>("appendInput", input("last"))).sequence, Number.MAX_SAFE_INTEGER);
   await c.fails("appendInput", input("overflow"), /sequence exhausted/);
   await c.call("processNext");
   assert.equal(await count(c), 1);
 });
 
-test("migrations run in order once and append new versions on reconstruction", async () => {
-  const c = await client("migrations");
-  const extra = { version: 3, statements: ["CREATE TABLE h_extra (value INTEGER)", "INSERT INTO h_extra VALUES (7)"] };
+test("inbox sequence is the rowid and session metadata has no mutable sequence counter", async () => {
+  const c = await client("schema-layout");
   await c.call("initialize", request());
-  await c.call("configure", { migrations: [...migrations, extra] });
+  assert.deepEqual((await c.sql<{ name: string }>("PRAGMA table_info(runtime_session)")).map(row => row.name),
+    ["singleton", "identity_json", "config_json", "created_at"]);
+  const columns = await c.sql<{ name: string; pk: number; notnull: number }>("PRAGMA table_info(runtime_inbox)");
+  assert.equal(columns.find(row => row.name === "sequence")!.pk, 1);
+  assert.equal(columns.find(row => row.name === "event_id")!.notnull, 1);
+  assert.equal((await c.sql("PRAGMA index_list(runtime_inbox)")).length, 2); // event ID + pending subset; no sequence autoindex
+  const table = (await c.sql<{ sql: string }>("SELECT sql FROM sqlite_master WHERE name = 'runtime_pending_operations'"))[0]!;
+  assert.match(table.sql, /WITHOUT ROWID/i);
+  await c.call("appendInput", input("first")); await c.call("processNext");
+  await c.call("configure", {}); // discard runtime instance; only a consumed tombstone remains
+  assert.equal((await c.call<InputReceipt>("appendInput", input("next"))).sequence, 2);
+  assert.deepEqual(await c.sql("SELECT rowid AS storage_rowid, sequence FROM runtime_inbox ORDER BY sequence"),
+    [{ storage_rowid: 1, sequence: 1 }, { storage_rowid: 2, sequence: 2 }]);
+});
+
+test("fixed schema bootstraps once without migration history or reconstruction writes", async () => {
+  const c = await client("bootstrap");
+  const extra = ["CREATE TABLE h_extra (value INTEGER)", "INSERT INTO h_extra VALUES (7)"];
+  await c.call("configure", { schema: [...schema, ...extra] });
+  await c.call("initialize", request());
+  await c.sql("UPDATE h_extra SET value = 9");
+  await c.call("configure", { schema: [...schema, ...extra] });
   await c.call("start");
-  await c.call("configure", { migrations: [...migrations, extra] });
+  assert.deepEqual(await c.sql("SELECT * FROM h_extra"), [{ value: 9 }]);
+  assert.deepEqual(await c.sql("SELECT name FROM sqlite_master WHERE name = 'runtime_migrations'"), []);
+  // No migration engine: edits require a new namespace, never an in-place upgrade.
+  await c.call("configure", { schema: [...schema, "CREATE TABLE h_later(value INTEGER)"] });
   await c.call("start");
-  assert.deepEqual(await c.sql("SELECT * FROM h_extra"), [{ value: 7 }]);
-  assert.deepEqual(await c.sql("SELECT scope, version FROM runtime_migrations ORDER BY scope, version"), [
-    { scope: "harness", version: 1 }, { scope: "harness", version: 3 }, { scope: "runtime", version: 1 },
-    { scope: "runtime", version: 2 },
-    { scope: "runtime", version: 3 },
-  ]);
+  assert.deepEqual(await c.sql("SELECT name FROM sqlite_master WHERE name = 'h_later'"), []);
+});
+
+test("failed bootstrap rolls back ALL runtime and harness schema and can retry", async () => {
+  const c = await client("bootstrap-rollback");
+  await c.call("configure", { schema: [...schema, "INSERT INTO missing_table VALUES (1)"] });
+  await c.fails("start", undefined, /missing_table/);
+  assert.deepEqual(await c.sql("SELECT name FROM sqlite_master WHERE name LIKE 'runtime_%' OR name LIKE 'h_%'"), []);
+  await c.call("configure", { schema });
+  await c.call("initialize", request());
   assert.equal(await count(c), 0);
 });
 
-test("migration SQL and history roll back together; earlier migrations remain", async () => {
-  const c = await client("migration-rollback");
-  const failing = { version: 2, statements: ["CREATE TABLE h_extra (value INTEGER)", "INSERT INTO h_extra VALUES (7)", "INSERT INTO missing_table VALUES (1)"] };
-  await c.call("configure", { migrations: [...migrations, failing] });
-  await c.fails("start", undefined, /missing_table/);
-  assert.deepEqual(await c.sql("SELECT name FROM sqlite_master WHERE name = 'h_extra'"), []);
-  assert.deepEqual(await c.sql("SELECT version FROM runtime_migrations WHERE scope = 'harness'"), [{ version: 1 }]);
-  await c.call("configure", { migrations: [...migrations, { ...failing, statements: failing.statements.slice(0, 2) }] });
-  await c.call("initialize", request());
-  assert.deepEqual(await c.sql("SELECT * FROM h_extra"), [{ value: 7 }]);
-});
-
-test("changed, removed, inserted and downgraded migration histories fail closed", async () => {
-  const c = await client("migration-drift");
-  const extra = { version: 3, statements: ["CREATE TABLE h_extra (value INTEGER)"] };
-  await c.call("configure", { migrations: [...migrations, extra] });
-  await c.call("initialize", request());
-  const histories = [
-    [], migrations,
-    [{ ...migrations[0]!, statements: [...migrations[0]!.statements, "SELECT 1"] }, extra],
-    [...migrations, { version: 2, statements: ["SELECT 1"] }, extra],
-  ];
-  for (const history of histories) {
-    await c.call("configure", { migrations: history });
-    await c.fails("start", undefined, /Incompatible harness migration history/);
-  }
-  assert.deepEqual(await c.sql("SELECT version FROM runtime_migrations WHERE scope = 'harness' ORDER BY version"), [{ version: 1 }, { version: 3 }]);
-  await c.sql("UPDATE runtime_migrations SET statements_json = '[]' WHERE scope = 'runtime'");
-  await c.call("configure", { migrations: [...migrations, extra] });
-  await c.fails("start", undefined, /Incompatible runtime migration history/);
-});
-
-test("invalid migration definitions are rejected before creating schema", async () => {
-  const c = await client("invalid-migrations");
-  for (const definitions of [
-    [{ version: 0, statements: ["SELECT 1"] }],
-    [{ version: 1, statements: [] }],
-    [migrations[0], migrations[0]],
-  ]) {
-    await c.call("configure", { migrations: definitions });
-    await c.fails("start");
-    assert.deepEqual(await c.sql("SELECT name FROM sqlite_master WHERE name LIKE 'runtime_%' OR name LIKE 'h_%'"), []);
-  }
-});
-
-test("wrong harness cannot open an initialized session or run its pending migrations", async () => {
+test("wrong harness cannot open an initialized session or change its schema", async () => {
   const c = await client("wrong-harness");
   await c.call("initialize", request());
   await c.call("configure", {
     identity: { id: "different", version: "v1" },
-    migrations: [...migrations, { version: 2, statements: ["CREATE TABLE h_wrong (value INTEGER)"] }],
+    schema: [...schema, "CREATE TABLE h_wrong (value INTEGER)"],
   });
   await c.fails("start", undefined, "INITIALIZATION_CONFLICT");
   assert.deepEqual(await c.sql("SELECT name FROM sqlite_master WHERE name = 'h_wrong'"), []);
@@ -351,6 +367,7 @@ test("full workerd restart recovers configuration, state, deduplication and pend
     const original = await c.call<InitializeSessionResult>("initialize", request({ label: "persisted" }));
     const receipt = await c.call<InputReceipt>("appendInput", input("a"));
     await c.call("processNext");
+    assert.deepEqual(await c.sql("SELECT event_json FROM runtime_inbox WHERE event_id = 'a'"), [{ event_json: null }]);
     await c.call("appendInput", input("b"));
     const previousActivation = (await stats(c)).activation;
     await instance.dispose();
@@ -361,11 +378,14 @@ test("full workerd restart recovers configuration, state, deduplication and pend
     assert.deepEqual(await c.call("getSession"), original.session);
     assert.deepEqual(await c.call("initialize", request({ label: "persisted" })), { ...original, duplicate: true });
     assert.deepEqual(await c.call("appendInput", input("a")), { ...receipt, duplicate: true });
+    await c.fails("appendInput", input("a", "record", "changed after restart"), "INPUT_CONFLICT");
     assert.equal(await count(c), 1);
     assert.deepEqual(await c.call("processNext"), { processed: true, eventId: "b", sequence: 2 });
     assert.equal(await count(c), 2);
     assert.equal((await stats(c)).configCalls, 0);
     assert.equal((await stats(c)).inputCalls, 0);
+    await c.call("configure", {});
+    assert.equal((await c.call<InputReceipt>("appendInput", input("c"))).sequence, 3);
   } finally {
     await instance.dispose();
     await rm(directory, { recursive: true, force: true });
