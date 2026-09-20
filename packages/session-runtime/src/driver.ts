@@ -1,220 +1,202 @@
 import type { AbortSignal as WorkerAbortSignal, DurableObjectStorage } from "@cloudflare/workers-types";
-import {
-  parseInitializeSessionRequest, parseOperationCompletion, parseSubmitInputRequest,
-  parseProviderStatusResult, parseProviderSubmitResult,
-} from "@managed-agents/contracts";
-import type { EventBody, CompletionReceipt, InitializeSessionResult, InputReceipt, SessionInfo } from "@managed-agents/contracts";
+import { Logger } from "@managed-agents/diagnostics";
+import { parseInitializeSessionRequest, parseProviderSubmitResult } from "@managed-agents/contracts";
+import type { EventBody, CompletionReceipt, HarnessStatus, InitializeSessionResult, InputReceipt, SessionInfo, ProviderSubmitResult } from "@managed-agents/contracts";
 import type { HarnessDefinition } from "@managed-agents/harness-api";
 import type { ProviderRegistry } from "./provider.ts";
 import { SessionRuntime } from "./runtime.ts";
-import { OperationStore } from "./storage/operations.ts";
-import type { DeliveryAction, OperationInfo } from "./storage/operations.ts";
 import { failProcessing, processingStatus, resetProcessing } from "./storage/progress.ts";
 import type { ProcessingStatus } from "./storage/progress.ts";
-import { findSession } from "./storage/session.ts";
 import { copy, freeze } from "./values.ts";
 import { operationDefinitions } from "./operation-definitions.ts";
-import type { RuntimeStorage } from "./types.ts";
+import type { RuntimeStorage, PreparedTransition, SubmissionReceipt } from "./types.ts";
 
 export type DriverStorage = RuntimeStorage & Pick<DurableObjectStorage, "getAlarm" | "setAlarm" | "deleteAlarm">;
-
 export interface DriverPolicy {
-  maxSteps: number;
-  maxSliceMs: number;
-  providerTimeoutMs: number;
-  attemptLeaseMs: number;
-  recoveryMs: number;
-  continuationMs: number;
-  retryBaseMs: number;
-  retryMaxMs: number;
-  reconcileMs: number;
-  maxHandlerFailures: number;
+  maxSteps: number; maxSliceMs: number; providerTimeoutMs: number; submissionConcurrency: number;
+  recoveryMs: number; continuationMs: number; retryBaseMs: number; retryMaxMs: number; maxHandlerFailures: number;
 }
-
 export const DEFAULT_DRIVER_POLICY: Readonly<DriverPolicy> = Object.freeze({
-  maxSteps: 32, maxSliceMs: 250, providerTimeoutMs: 10_000, attemptLeaseMs: 15_000,
-  recoveryMs: 30_000, continuationMs: 1, retryBaseMs: 500, retryMaxMs: 60_000,
-  reconcileMs: 30_000, maxHandlerFailures: 5,
+  maxSteps: 32, maxSliceMs: 250, providerTimeoutMs: 10_000, submissionConcurrency: 8,
+  recoveryMs: 30_000, continuationMs: 1, retryBaseMs: 500, retryMaxMs: 60_000, maxHandlerFailures: 5,
 });
-
 export interface SessionDriverOptions {
   providers: ProviderRegistry;
-  /** Bind to DurableObjectState.waitUntil. Called for prompt progress after admission. */
   waitUntil(promise: Promise<void>): void;
+  onStatusChange?(status: HarnessStatus): void;
   policy?: Partial<DriverPolicy>;
+  diagnostics?: Logger;
 }
 
-/** One driver per DO. The host must forward alarm() and use these admission methods.
- * The synchronous core remains available independently for manual Step 1 diagnostics. */
-export class SessionDriver<Config, Input extends EventBody> {
+/** One serialized transition processor per DO. Admission remains independent of remote submission. */
+export class SessionDriver<Config, Input extends EventBody, Changes = unknown> {
   readonly #storage: DriverStorage;
-  readonly #runtime: SessionRuntime<Config, Input>;
-  readonly #operations: OperationStore;
+  readonly #runtime: SessionRuntime<Config, Input, Changes>;
   readonly #providers: ProviderRegistry;
   readonly #waitUntil: SessionDriverOptions["waitUntil"];
   readonly #policy: Readonly<DriverPolicy>;
+  readonly #onStatusChange: SessionDriverOptions["onStatusChange"];
+  readonly #logger: Logger;
   #queue: Promise<unknown> = Promise.resolve();
   #running: Promise<void> | undefined;
   #requested = false;
+  #receiptInput: string | undefined;
+  #receipts = new Map<string, ProviderSubmitResult>();
 
-  constructor(storage: DriverStorage, harness: HarnessDefinition<Config, Input>, options: SessionDriverOptions) {
+  constructor(storage: DriverStorage, harness: HarnessDefinition<Config, Input, Changes>, options: SessionDriverOptions) {
     const policy = { ...DEFAULT_DRIVER_POLICY, ...options.policy };
     for (const [name, value] of Object.entries(policy)) {
       if (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647) throw new Error(`Invalid driver policy: ${name}.`);
     }
-    if (policy.attemptLeaseMs <= policy.providerTimeoutMs) throw new Error("attemptLeaseMs must exceed providerTimeoutMs.");
     if (policy.retryMaxMs < policy.retryBaseMs) throw new Error("retryMaxMs must be >= retryBaseMs.");
     for (const { provider } of operationDefinitions(harness.operations)) {
-      const adapter = Object.hasOwn(options.providers, provider) ? options.providers[provider] : undefined;
-      if (!adapter || typeof adapter.submit !== "function" || typeof adapter.get !== "function") {
+      if (!Object.hasOwn(options.providers, provider) || typeof options.providers[provider]?.submit !== "function") {
         throw new Error(`Provider is not configured for declared harness operations: ${provider}`);
       }
     }
     this.#storage = storage;
     this.#runtime = new SessionRuntime(storage, harness);
-    this.#operations = new OperationStore(storage);
+    this.#logger = options.diagnostics ?? new Logger("session-runtime");
     this.#providers = Object.freeze({ ...options.providers });
     this.#waitUntil = options.waitUntil;
+    this.#onStatusChange = options.onStatusChange;
     this.#policy = Object.freeze(policy);
   }
 
   async initialize(value: unknown): Promise<InitializeSessionResult> {
     const request = copy(parseInitializeSessionRequest(value));
-    return this.#admit(() => this.#runtime.initialize(request));
+    return this.#locked(() => this.#runtime.initialize(request));
   }
-
-  async appendInput(value: unknown): Promise<InputReceipt> {
-    const request = copy(parseSubmitInputRequest(value));
-    return this.#admit(() => this.#runtime.appendInput(request));
-  }
-
-  /** Host authenticates this provider; never expose this as ordinary user input. */
+  async appendInput(value: unknown): Promise<InputReceipt> { return this.#admit(this.#runtime.prepareInput(value)); }
   async acceptCompletion(value: unknown): Promise<CompletionReceipt> {
-    const completion = copy(parseOperationCompletion(value));
-    return this.#admit(() => this.#runtime.acceptCompletion(completion));
-  }
-
-  getSession(): SessionInfo { return this.#runtime.getSession(); }
-  getOperation(id: string): OperationInfo { return this.#runtime.getOperation(id); }
-  getProcessingStatus(): ProcessingStatus { return processingStatus(this.#storage.sql); }
-
-  /** Retry the retained head input after fixing the harness/configuration. Never skips it. */
-  async resumeProcessing(): Promise<void> {
-    await this.#admit(() => {
-      this.#runtime.getSession();
-      resetProcessing(this.#storage.sql);
+    const check = this.#runtime.prepareCompletion(value);
+    const result = await this.#locked(async () => {
+      const admission = check();
+      if (!admission.consumed) await this.#arm();
+      return { receipt: admission.commit(), consumed: admission.consumed };
     });
+    if (!result.consumed) this.#kick();
+    return result.receipt;
   }
-
-  /** Forward every DO alarm, including duplicates. Re-arm even when joining a running slice:
-   * entering an alarm consumes the previously scheduled wakeup. */
-  async alarm(): Promise<void> {
-    await this.#locked(() => this.#arm());
-    await this.run();
+  getSession(): SessionInfo { return this.#runtime.getSession(); }
+  getPendingOperations() { return this.#runtime.getPendingOperations(); }
+  getProcessingStatus(): ProcessingStatus { return processingStatus(this.#storage.sql); }
+  async resumeProcessing(): Promise<void> {
+    await this.#admit(() => { this.#runtime.getSession(); resetProcessing(this.#storage.sql); });
   }
+  async alarm(): Promise<void> { await this.#locked(() => this.#arm()); await this.#start(true); }
 
-  /** A bounded progress slice; concurrent callers join it. Usually invoked via waitUntil/alarm. */
-  run(): Promise<void> {
+  run(): Promise<void> { return this.#start(false); }
+  #start(recoveryArmed: boolean): Promise<void> {
     if (this.#running) return this.#running;
-    this.#running = this.#drain().finally(() => {
+    this.#running = this.#drain(recoveryArmed).catch(error => {
+      this.#logger.error("processing_unavailable", { stage: "drain", ...this.#correlation(),
+        errorCode: "RUNTIME_STORAGE_OR_ALARM_FAILURE", retryable: true });
+      throw error;
+    }).finally(() => {
       this.#running = undefined;
-      if (this.#requested) {
-        this.#requested = false;
-        this.#kick();
-      }
+      if (this.#requested) { this.#requested = false; this.#kick(); }
     });
     return this.#running;
   }
-
   #kick(): void {
     if (this.#running) { this.#requested = true; return; }
-    this.#waitUntil(this.run());
+    // Admission already armed recovery while holding the same processing lock.
+    this.#waitUntil(this.#start(true));
   }
-
   async #admit<T>(commit: () => T): Promise<T> {
-    const result = await this.#locked(async () => {
-      // Crash before commit leaves a harmless extra alarm; crash after commit leaves a wakeup.
-      // No network is awaited under this lock. Alarm clearing uses the same lock.
-      await this.#arm();
-      return commit();
-    });
+    const result = await this.#locked(async () => { await this.#arm(); return commit(); });
     this.#kick();
     return result;
   }
-
   #locked<T>(fn: () => T | Promise<T>): Promise<T> {
-    const next = this.#queue.then(fn);
-    this.#queue = next.catch(() => {});
-    return next;
+    const next = this.#queue.then(fn); this.#queue = next.catch(() => {}); return next;
   }
-
   async #arm(): Promise<void> {
-    const due = Date.now() + this.#policy.recoveryMs;
-    const existing = await this.#storage.getAlarm();
+    const due = Date.now() + this.#policy.recoveryMs, existing = await this.#storage.getAlarm();
     if (existing === null || existing > due) await this.#storage.setAlarm(due);
   }
-
   #backoff(attempt: number): number {
     const cap = Math.min(this.#policy.retryMaxMs, this.#policy.retryBaseMs * 2 ** Math.min(30, attempt - 1));
-    // Bounded jitter keeps many recovering sessions from retrying in lockstep.
     return Math.max(1, Math.round(cap * (0.5 + Math.random() * 0.5)));
   }
+  #correlation(): { sessionId?: string } {
+    const sessionId = this.#runtime.cachedSessionId;
+    return sessionId ? { sessionId } : {};
+  }
+  #failed(progress: ProcessingStatus, error: unknown, handlerFailure: boolean, stage: string): void {
+    const blocked = handlerFailure && progress.failures + 1 >= this.#policy.maxHandlerFailures;
+    failProcessing(this.#storage.sql, progress, Date.now() + this.#backoff(progress.failures + 1),
+      blocked, errorMessage(error));
+    const fields = { ...this.#correlation(), stage, blocked, attempt: progress.failures + 1, retryable: !blocked,
+      errorCode: handlerFailure ? "HARNESS_TRANSITION_FAILED" : "SUBMISSION_UNCERTAIN" };
+    if (handlerFailure) this.#logger.error(blocked ? "processing_blocked" : "transition_failed", fields);
+    else this.#logger.warn("processing_retry_scheduled", fields);
+  }
 
-  async #drain(): Promise<void> {
-    await this.#locked(() => this.#arm());
+  async #drain(recoveryArmed: boolean): Promise<void> {
+    if (!recoveryArmed) await this.#locked(() => this.#arm());
     const started = Date.now();
     for (let step = 0; step < this.#policy.maxSteps && Date.now() - started < this.#policy.maxSliceMs; step++) {
       const work = await this.#locked(() => {
-        if (!findSession(this.#storage.sql)) return { processed: false, action: undefined };
-        const now = Date.now();
+        if (!this.#runtime.initialized) return;
         const progress = processingStatus(this.#storage.sql);
-        let processed = false;
-        if (progress.pendingEventId !== null && !progress.blocked && (progress.retryAt === null || progress.retryAt <= now)) {
-          try {
-            processed = this.#runtime.processNext().processed;
-            resetProcessing(this.#storage.sql);
-          } catch (error) {
-            // The transition rolled back; persist its retry state in a separate write.
-            failProcessing(this.#storage.sql, progress, now + this.#backoff(progress.failures + 1),
-              this.#policy.maxHandlerFailures, errorMessage(error));
-          }
-        }
-        return { processed, action: this.#operations.claim(now, this.#policy.attemptLeaseMs) };
+        if (!progress.pendingEventId || progress.blocked || (progress.retryAt !== null && progress.retryAt > Date.now())) return;
+        try {
+          const prepared = this.#runtime.prepareNext();
+          return prepared && { prepared, progress };
+        } catch (error) { this.#failed(progress, error, true, "prepare"); return; }
       });
-      if (work.action) await this.#deliver(work.action);
-      if (!work.processed && !work.action) break;
+      if (!work) break;
+      let receipts: SubmissionReceipt[];
+      try { receipts = await this.#submit(work.prepared); }
+      catch (error) {
+        // Unknown acceptance never authorizes dropping the input or creating new operation identities.
+        await this.#locked(() => this.#failed(work.progress, error, false, "submit"));
+        break;
+      }
+      const result = await this.#locked(() => {
+        try { return this.#runtime.commit(work.prepared, receipts); }
+        catch (error) { this.#failed(work.progress, error, true, "commit"); return; }
+      });
+      if (!result) break;
+      this.#receipts.clear(); this.#receiptInput = undefined;
+      if (result.processed && result.status !== undefined) {
+        if (result.status === "failed") this.#logger.error("run_failed", { ...this.#correlation(), stage: "harness", errorCode: "HARNESS_STOPPED", retryable: false });
+        else this.#logger.success("harness_status_changed", { ...this.#correlation(), stage: "harness", outcome: result.status });
+        try { this.#onStatusChange?.(result.status); }
+        catch { this.#logger.error("status_publish_failed", { ...this.#correlation(), stage: "status", errorCode: "STATUS_PUBLICATION_FAILED", retryable: false }); }
+      }
     }
-    // The snapshot and alarm update share the admission lock, so a concurrent input cannot
-    // be committed between an idle snapshot and deleteAlarm (or a later setAlarm).
     await this.#locked(async () => {
       const progress = processingStatus(this.#storage.sql);
-      const inboxDue = progress.pendingEventId !== null && !progress.blocked ? progress.retryAt ?? Date.now() : null;
-      const operationDue = this.#operations.nextDeadline();
-      const due = inboxDue === null ? operationDue : operationDue === null ? inboxDue : Math.min(inboxDue, operationDue);
-      if (due === null) await this.#storage.deleteAlarm();
-      else await this.#storage.setAlarm(Math.max(Date.now() + this.#policy.continuationMs, due));
+      if (progress.pendingEventId === null || progress.blocked) await this.#storage.deleteAlarm();
+      else await this.#storage.setAlarm(Math.max(Date.now() + this.#policy.continuationMs, progress.retryAt ?? Date.now()));
     });
   }
 
-  async #deliver(action: DeliveryAction): Promise<void> {
-    try {
-      const provider = Object.hasOwn(this.#providers, action.provider) ? this.#providers[action.provider] : undefined;
-      if (!provider) throw new Error(`Provider is not configured: ${action.provider}`);
-      if (action.kind === "submit") {
-        const result = copy(parseProviderSubmitResult(await withTimeout(signal => provider.submit(freeze({
-          operationId: action.operationId, submissionId: action.submissionId, request: action.request,
-        }), signal), this.#policy.providerTimeoutMs)));
-        await this.#locked(() => this.#operations.submitted(action, result, Date.now(), this.#policy.reconcileMs));
-      } else {
-        const result = copy(parseProviderStatusResult(await withTimeout(signal => provider.get(freeze({
-          operationId: action.operationId, submissionId: action.submissionId, jobId: action.jobId,
-        }), signal), this.#policy.providerTimeoutMs)));
-        await this.#locked(() => this.#operations.reconciled(action, result, Date.now(), this.#policy.reconcileMs));
-      }
-    } catch (error) {
-      // This includes ambiguous timeouts and malformed responses. Neither proves rejection.
-      await this.#locked(() => this.#operations.retry(action, Date.now() + this.#backoff(action.attempt), errorMessage(error)));
+  async #submit(prepared: PreparedTransition<Changes>): Promise<SubmissionReceipt[]> {
+    if (this.#receiptInput !== prepared.input.eventId) {
+      this.#receipts.clear(); this.#receiptInput = prepared.input.eventId;
     }
+    const pending = prepared.operations.filter(op => !this.#receipts.has(op.operationId));
+    let cursor = 0;
+    const errors: unknown[] = [];
+    // Bound transport concurrency, not operation count. Observe every attempt even after a sibling fails.
+    await Promise.all(Array.from({ length: Math.min(pending.length, this.#policy.submissionConcurrency) }, async () => {
+      for (;;) {
+        const operation = pending[cursor++];
+        if (!operation) return;
+        try {
+          const provider = this.#providers[operation.request.provider]!;
+          const { key: _, ...submission } = operation;
+          const result = parseProviderSubmitResult(await withTimeout(signal => provider.submit(freeze(submission), signal), this.#policy.providerTimeoutMs));
+          this.#receipts.set(operation.operationId, freeze(result));
+        } catch (error) { errors.push(error); }
+      }
+    }));
+    if (errors.length) throw errors[0];
+    return prepared.operations.map(op => ({ operationId: op.operationId, result: this.#receipts.get(op.operationId)! }));
   }
 }
 
