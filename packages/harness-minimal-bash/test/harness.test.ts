@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import type { SQLInputValue } from "node:sqlite";
-import type { SqlStorage } from "@cloudflare/workers-types";
+import type { SqlStorage, SqlStorageValue } from "@cloudflare/workers-types";
 import { ContractException, parseJsonValue } from "@managed-agents/contracts";
-import type { JsonValue, LlmInput, OperationOutcome } from "@managed-agents/contracts";
+import type { HarnessStatus, JsonValue, LlmInput, OperationOutcome, ProviderSubmission } from "@managed-agents/contracts";
 import { SessionRuntime } from "@managed-agents/session-runtime";
 import { minimalBashHarness, parseMinimalBashConfig, parseMinimalBashInput, readMinimalBashMessages, readMinimalBashState, readPendingMessages } from "../src/index.ts";
 import { appendMessage } from "../src/state.ts";
-import { readJson } from "@managed-agents/sqlite-json";
+import { buildLlmInput } from "../src/openai.ts";
 
 const config = { provider: "openai", modelId: "gpt-5.6-sol", accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", cwd: "/workspace" };
 class Storage {
@@ -26,24 +26,37 @@ class Storage {
 }
 function fixture() {
   const storage = new Storage();
+  let status: HarnessStatus = "idle";
+  const statuses: HarnessStatus[] = [];
   let runtime = new SessionRuntime(storage, minimalBashHarness);
+  const submitted = new Map<string, ProviderSubmission>();
+  function process() {
+    const plan = runtime.prepareNext();
+    if (!plan) return { processed: false as const };
+    for (const op of plan.operations) submitted.set(op.operationId, op);
+    const result = runtime.commit(plan, plan.operations.map(op => ({ operationId: op.operationId,
+      result: { status: "accepted" as const, jobId: `job-${op.operationId}` } })));
+    if (result.processed && result.status) { status = result.status; statuses.push(status); }
+    return result;
+  }
   runtime.initialize({ session: { sessionId: "test-session", harness: minimalBashHarness.identity }, config });
   return { storage, get runtime() { return runtime; }, restart() { runtime = new SessionRuntime(storage, minimalBashHarness); },
-    state: () => readMinimalBashState(storage.sql),
+    statuses, process, submitted,
+    state: () => ({ ...readMinimalBashState(storage.sql), status }),
     page: () => readMinimalBashMessages(storage.sql),
     pending: () => readPendingMessages(storage.sql),
     send(id: string, type = "minimal_bash.message", payload: JsonValue = { message: { role: "user", content: [{ type: "text", text: id }] } }) {
-      const receipt = runtime.appendInput({ eventId: id, event: { type, payload } }); runtime.processNext(); return receipt;
+      const receipt = runtime.appendInput({ eventId: id, event: { type, payload } }); process(); return receipt;
     },
     request() {
-      const row = storage.sql.exec<{ operation_id: string; provider: string; input_json: string }>(`SELECT o.operation_id, o.provider, b.input_json FROM runtime_operations o
-        JOIN runtime_outbox b ON b.operation_id = o.operation_id WHERE o.operation_id = ?`, readMinimalBashState(storage.sql).activeOperationId).one();
-      return { ...row, input: readJson<Exclude<LlmInput, { previousJobId: string }>>(storage.sql, "runtime_json_chunks", row.input_json) };
+      const row = submitted.get(readMinimalBashState(storage.sql).activeOperationId!)!;
+      return { operation_id: row.operationId, provider: row.request.provider,
+        input: row.request.input as unknown as Exclude<LlmInput, { previousJobId: string }> };
     },
     complete(outcome: OperationOutcome) {
-      const row = storage.sql.exec<{ operation_id: string; submission_id: string; provider: string }>("SELECT * FROM runtime_operations WHERE operation_id = ?", readMinimalBashState(storage.sql).activeOperationId).one();
-      const value = { operationId: row.operation_id, submissionId: row.submission_id, provider: row.provider, jobId: `job-${row.operation_id}`, outcome };
-      const receipt = runtime.acceptCompletion(value); runtime.processNext(); return { value, receipt };
+      const row = runtime.getPendingOperations().find(op => op.operationId === readMinimalBashState(storage.sql).activeOperationId)!;
+      const value = { operationId: row.operationId, submissionId: row.operationId, provider: row.provider, jobId: row.jobId, outcome };
+      const receipt = runtime.acceptCompletion(value); process(); return { value, receipt };
     },
   };
 }
@@ -72,7 +85,10 @@ test("input validation preserves full user messages and rejects follow-ups or fa
 test("full native messages replay unchanged; lifecycle entries never reach LLM input", () => {
   const f = fixture();
   try {
+    assert.deepEqual(f.page().messages, []);
     f.send("first"); const first = f.request();
+    assert.match(first.input.instructions!, /\/workspace/);
+    assert.equal(first.input.messages.some(message => message.role === "system"), false);
     assert.equal(first.input.previousJobId, null); assert.equal(first.input.accountId, config.accountId);
     assert.deepEqual(first.input.providerOptions.reasoning, { effort: "medium", summary: "auto" });
     assert.equal(first.input.providerOptions.store, false); assert.equal(first.input.providerOptions.parallel_tool_calls, false);
@@ -84,9 +100,44 @@ test("full native messages replay unchanged; lifecycle entries never reach LLM i
     const replay = f.request().input.messages;
     assert.deepEqual(replay.find(m => m.role === "assistant"), (outcome as unknown as { result: { response: { message: unknown } } }).result.response.message);
     assert.equal(replay.at(-1)?.role, "tool_result"); assert.ok(replay.every(m => m.role !== "custom"));
-    assert.equal(f.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM runtime_outbox").one().n, 1);
+    assert.equal(f.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM runtime_pending_operations").one().n, 1);
     f.complete(assistant()); assert.equal(f.state().status, "idle");
-    assert.ok(f.page().messages.some(row => row.message.role === "custom" && !row.inContext));
+    assert.deepEqual(f.statuses, ["running", "idle"]);
+    assert.equal(f.page().messages.some(row => row.message.role === "custom"), false);
+  } finally { f.storage.db.close(); }
+});
+test("message sequences survive rollback and restart without AUTOINCREMENT or a context index", () => {
+  const f = fixture(); try {
+    const message = { role: "user" as const, content: [{ type: "text" as const, text: "hello" }] };
+    assert.equal(appendMessage(f.storage.sql, message, null), 1);
+    assert.throws(() => f.storage.transactionSync(() => {
+      assert.equal(appendMessage(f.storage.sql, message, null), 2);
+      throw new Error("rollback");
+    }), /rollback/);
+    f.restart();
+    assert.equal(appendMessage(f.storage.sql, message, null), 2);
+    f.send("next");
+    assert.deepEqual(f.page().messages.map(row => row.sequence), [1, 2, 3]);
+    assert.deepEqual(f.storage.sql.exec("SELECT name FROM sqlite_master WHERE name IN ('sqlite_sequence', 'minimal_bash_messages_context')").toArray(), []);
+  } finally { f.storage.db.close(); }
+});
+test("context scans all history in order, then excludes messages in memory before its byte limit", () => {
+  const f = fixture(); try {
+    const first = { role: "user" as const, content: [{ type: "text" as const, text: "first" }] };
+    const last = { role: "user" as const, content: [{ type: "text" as const, text: "last" }] };
+    appendMessage(f.storage.sql, first, null);
+    // Individually valid rows, but the excluded history exceeds the operation input budget in total.
+    for (let i = 0; i < 9; i++) appendMessage(f.storage.sql,
+      { role: "custom", tag: "excluded", data: "x".repeat(1_000_000) }, null, { inContext: false });
+    appendMessage(f.storage.sql, last, null);
+    const queries: string[] = [];
+    const sql = { exec: (query: string, ...bindings: SqlStorageValue[]) => {
+      queries.push(query); return f.storage.sql.exec(query, ...bindings);
+    } } as Pick<SqlStorage, "exec">;
+    const input = buildLlmInput(sql, parseMinimalBashConfig(config), "test-session") as unknown as { messages: unknown[] };
+    assert.deepEqual(input.messages, [first, last]);
+    assert.deepEqual(queries, ["SELECT message_json, in_context FROM minimal_bash_messages ORDER BY sequence"]);
+    assert.equal(f.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM minimal_bash_messages").one().n, 11);
   } finally { f.storage.db.close(); }
 });
 test("all steering drains together after the entire serial tool batch, including messages sent during LLM", () => {
@@ -135,7 +186,7 @@ test("input and completion retries cannot duplicate transcript rows or operation
   const f = fixture(); try {
     f.send("one"); assert.equal(f.send("one").duplicate, true);
     const { value, receipt } = f.complete(assistant()); const count = f.page().messages.length;
-    assert.deepEqual(f.runtime.acceptCompletion(value), { ...receipt, duplicate: true }); assert.equal(f.runtime.processNext().processed, false);
+    assert.deepEqual(f.runtime.acceptCompletion(value), { ...receipt, duplicate: true }); assert.equal(f.process().processed, false);
     assert.equal(f.page().messages.length, count);
     assert.throws(() => f.send("one", "minimal_bash.message", { message: { role: "user", content: [{ type: "text", text: "changed" }] } }));
   } finally { f.storage.db.close(); }
@@ -171,13 +222,14 @@ test("unknown bash outcomes stop, close remaining calls, and never resubmit the 
     f.complete({ status: "failed", origin: "execution", error: { code: "BASH_EXECUTION_UNKNOWN", message: "May have run" } });
     assert.equal(f.state().status, "failed"); assert.equal(f.page().messages.filter(row => row.message.role === "tool_result").length, 2);
     f.send("resume", "minimal_bash.resume", {}); assert.equal(f.request().provider, "llm");
-    assert.equal(f.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM runtime_operations WHERE provider = 'tool-pi-bash'").one().n, 1);
+    assert.equal([...f.submitted.values()].filter(op => op.request.provider === "tool-pi-bash").length, 1);
   } finally { f.storage.db.close(); }
 });
 test("8 MiB input size limits commit failures rather than poison the inbox", () => {
   const f = fixture(); try {
-    f.send("large", "minimal_bash.message", { message: { role: "user", content: [{ type: "text", text: "x".repeat(8 * 1024 * 1024) }] } });
-    assert.equal(f.state().status, "failed"); assert.equal(f.runtime.processNext().processed, false);
+    for (let i = 0; i < 9; i++) appendMessage(f.storage.sql, { role: "user", content: [{ type: "text", text: "x".repeat(1_000_000) }] }, null);
+    f.send("large");
+    assert.equal(f.state().status, "failed"); assert.equal(f.process().processed, false);
     assert.equal((f.state().error as { code: string }).code, "OPERATION_INPUT_TOO_LARGE");
     assert.equal(f.state().activeOperationId, null);
   } finally { f.storage.db.close(); }
@@ -196,27 +248,30 @@ test("runs continue beyond 100 model turns without requiring resume", () => {
 });
 test("large context is submitted without a byte-to-token estimate; provider rejection fails the run", () => {
   const f = fixture(); try {
-    const text = "x".repeat(3 * 1024 * 1024);
+    const text = "x".repeat(1_000_000);
+    for (let i = 0; i < 3; i++) appendMessage(f.storage.sql, { role: "user", content: [{ type: "text", text }] }, null);
     f.send("large", "minimal_bash.message", { message: { role: "user", content: [{ type: "text", text }] } });
     assert.equal(f.state().status, "running");
     assert.equal(f.request().input.providerOptions.max_output_tokens, 128_000);
     assert.deepEqual(f.request().input.messages.at(-1), { role: "user", content: [{ type: "text", text }] });
+    assert.ok(JSON.stringify(f.request().input).length > 3_000_000);
     f.complete({ status: "failed", origin: "execution", error: { code: "context_length_exceeded", message: "Provider context exceeded" } });
     assert.equal(f.state().status, "failed"); assert.equal(f.state().activeOperationId, null);
-    assert.equal(f.runtime.processNext().processed, false);
+    assert.equal(f.process().processed, false);
   } finally { f.storage.db.close(); }
 });
 test("large native assistant payload survives restart, transcript pagination and full replay", () => {
   const f = fixture(); try {
     f.send("one");
-    const content = [{ type: "reasoning", id: "r-large", encrypted_content: "😀".repeat(800_000), summary: [] }, nativeCall("large-call")];
+    const content = [{ type: "reasoning", id: "r-large", encrypted_content: "😀".repeat(440_000), summary: [] }, nativeCall("large-call")];
     f.complete(assistant(content)); f.restart();
     assert.equal(f.request().provider, "tool-pi-bash"); f.complete(bash());
     const replay = f.request().input.messages.find(m => m.role === "assistant")!;
     assert.deepEqual(replay.content, content);
-    const first = f.page(); assert.notEqual(first.nextCursor, null);
-    const next = readMinimalBashMessages(f.storage.sql, first.nextCursor!);
+    const first = readMinimalBashMessages(f.storage.sql, 0, 1); assert.notEqual(first.nextCursor, null);
+    const next = readMinimalBashMessages(f.storage.sql, first.nextCursor!, 1);
     assert.equal(next.messages.length, 1); assert.deepEqual(next.messages[0]!.message, replay);
+    assert.deepEqual(f.storage.sql.exec("SELECT name FROM sqlite_master WHERE name LIKE '%chunks%'").toArray(), []);
     f.complete(assistant()); assert.equal(f.state().status, "idle");
   } finally { f.storage.db.close(); }
 });
@@ -228,7 +283,7 @@ test("responses with more than 64 bash calls execute every call serially", () =>
       const request = f.request();
       assert.equal(request.provider, "tool-pi-bash");
       assert.deepEqual(request.input, { command: `echo ${i}`, cwd: config.cwd, machineId: config.machineId });
-      assert.equal(f.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM runtime_outbox").one().n, 1);
+      assert.equal(f.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM runtime_pending_operations").one().n, 1);
       f.complete(bash());
     }
     assert.equal(f.request().provider, "llm");
@@ -240,15 +295,18 @@ test("state, promoted messages and requested operations roll back together", () 
   const f = fixture(); try {
     f.runtime.appendInput({ eventId: "one", event: { type: "minimal_bash.message", payload: { message: { role: "user", content: [{ type: "text", text: "one" }] } } } });
     f.storage.db.exec("CREATE TRIGGER fail_state BEFORE UPDATE ON minimal_bash_state BEGIN SELECT RAISE(ABORT, 'injected'); END");
-    assert.throws(() => f.runtime.processNext(), /injected/);
-    assert.equal(f.page().messages.length, 1); assert.equal(f.pending().messages.length, 0);
-    assert.equal(f.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM runtime_operations").one().n, 0);
-    f.storage.db.exec("DROP TRIGGER fail_state"); f.runtime.processNext(); assert.equal(f.state().status, "running");
+    assert.throws(() => f.process(), /injected/);
+    assert.equal(f.page().messages.length, 0); assert.equal(f.pending().messages.length, 0);
+    assert.equal(f.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM runtime_pending_operations").one().n, 0);
+    f.storage.db.exec("DROP TRIGGER fail_state");
+    const processed = f.process();
+    assert.ok(processed.processed); assert.equal(processed.status, "running");
   } finally { f.storage.db.close(); }
 });
 test("messages are cursor-paginated independently from pending admission order", () => {
   const f = fixture(); try {
     f.send("one"); f.send("two"); f.send("three");
+    appendMessage(f.storage.sql, { role: "user", content: [{ type: "text", text: "page fixture" }] }, null);
     const first = readMinimalBashMessages(f.storage.sql, 0, 1); assert.equal(first.messages.length, 1); assert.equal(first.nextCursor, 1);
     assert.equal(readMinimalBashMessages(f.storage.sql, first.nextCursor!, 100).messages[0]!.sequence, 2);
     const pending = readPendingMessages(f.storage.sql, 0, 1); assert.equal(pending.messages[0]!.eventId, "two");
@@ -262,9 +320,65 @@ test("large transcript and pending pages stop at a byte budget without dropping 
       appendMessage(f.storage.sql, message, null);
       f.storage.sql.exec("INSERT INTO minimal_bash_pending_messages VALUES (?, ?, ?)", `large-${i}`, i, JSON.stringify(message)).toArray();
     }
-    const first = f.page(); assert.equal(first.messages.length, 3); assert.equal(first.nextCursor, 3);
+    const first = f.page(); assert.equal(first.messages.length, 2); assert.equal(first.nextCursor, 2);
     const rest = readMinimalBashMessages(f.storage.sql, first.nextCursor!); assert.equal(rest.messages.length, 2); assert.equal(rest.nextCursor, null);
     const pending = f.pending(); assert.equal(pending.messages.length, 2); assert.equal(pending.nextCursor, 2);
     const remaining = readPendingMessages(f.storage.sql, pending.nextCursor!); assert.equal(remaining.messages.length, 2); assert.equal(remaining.nextCursor, null);
+  } finally { f.storage.db.close(); }
+});
+
+test("planning a completion replays identical full context and promotes inline steering", () => {
+  const f = fixture(); try {
+    f.send("one");
+    const message = { role: "user", content: [{ type: "text", text: "😀".repeat(300_000) }] };
+    f.send("steer", "minimal_bash.message", { message });
+    assert.deepEqual(f.storage.sql.exec("SELECT name FROM sqlite_master WHERE name LIKE '%chunks%'").toArray(), []);
+    const row = f.runtime.getPendingOperations()[0]!;
+    f.runtime.acceptCompletion({ operationId: row.operationId, submissionId: row.operationId, provider: row.provider,
+      jobId: row.jobId, outcome: assistant() });
+    const first = f.runtime.prepareNext()!;
+    assert.equal(f.page().messages.length, 1); assert.equal(f.pending().messages.length, 1);
+    f.restart(); const replay = f.runtime.prepareNext()!;
+    assert.deepEqual(replay, first);
+    const llm = replay.operations[0]!.request.input as unknown as Exclude<LlmInput, { previousJobId: string }>;
+    assert.deepEqual(llm.messages.map(m => m.role), ["user", "assistant", "user"]);
+    assert.deepEqual(llm.messages.at(-1), message);
+    f.process(); assert.equal(f.pending().messages.length, 0);
+    assert.deepEqual(f.storage.sql.exec("SELECT name FROM sqlite_master WHERE name LIKE '%chunks%'").toArray(), []);
+    f.restart(); assert.deepEqual(f.page().messages.at(-1)!.message, message);
+  } finally { f.storage.db.close(); }
+});
+
+test("oversized individual message fails the harness, consumes the input and never submits an operation", () => {
+  const f = fixture(); try {
+    // Fits the inbox's envelope budget, but not the harness message-row budget.
+    const receipt = f.send("oversized", "minimal_bash.message", { message: { role: "user", content: [{ type: "text", text: "x".repeat(1_910_000) }] } });
+    assert.equal(f.state().status, "failed");
+    assert.equal((f.state().error as { code: string }).code, "MESSAGE_TOO_LARGE");
+    assert.equal(f.state().activeOperationId, null);
+    assert.equal(f.page().messages.length, 0); assert.equal(f.submitted.size, 0);
+    assert.equal(f.process().processed, false);
+    assert.equal(f.storage.sql.exec<{ event_json: null }>("SELECT event_json FROM runtime_inbox").one().event_json, null);
+    assert.equal(receipt.duplicate, false);
+  } finally { f.storage.db.close(); }
+});
+
+test("oversized steering fails cleanly and an old accepted job cannot poison a resumed run", () => {
+  const f = fixture(); try {
+    f.send("first");
+    const old = f.runtime.getPendingOperations()[0]!;
+    f.send("oversized-steering", "minimal_bash.message", { message: { role: "user", content: [{ type: "text", text: "x".repeat(1_910_000) }] } });
+    assert.equal(f.state().status, "failed"); assert.equal(f.pending().messages.length, 0);
+    assert.equal((f.state().error as { code: string }).code, "MESSAGE_TOO_LARGE");
+    f.send("resume", "minimal_bash.resume", {});
+    const current = f.state().activeOperationId;
+    assert.notEqual(current, old.operationId);
+    f.runtime.acceptCompletion({ operationId: old.operationId, submissionId: old.operationId,
+      provider: old.provider, jobId: old.jobId, outcome: assistant([nativeCall("must-not-execute")]) });
+    f.process();
+    assert.equal(f.state().activeOperationId, current); assert.equal(f.state().status, "running");
+    assert.deepEqual(f.page().messages.map(row => row.message.role), ["user"]);
+    assert.equal(f.runtime.getPendingOperations().some(row => row.operationId === old.operationId), false);
+    f.complete(assistant()); assert.equal(f.state().status, "idle");
   } finally { f.storage.db.close(); }
 });
