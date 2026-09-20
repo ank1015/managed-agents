@@ -1,37 +1,30 @@
 import type { SqlStorage } from "@cloudflare/workers-types";
-import { ContractException, parseOperationRequest } from "@managed-agents/contracts";
-import type { OperationRequest, SessionInfo } from "@managed-agents/contracts";
-import type { HarnessContext } from "@managed-agents/harness-api";
-import { insertOperation } from "./storage/operations.ts";
-import { copy, freeze, timestamp } from "./values.ts";
-import { operationKey } from "./operation-definitions.ts";
+import type { SessionInfo } from "@managed-agents/contracts";
+import type { HarnessInitializationContext, HarnessReadContext } from "@managed-agents/harness-api";
+import { operationId } from "./operation-identity.ts";
 
-export function createContext<Config>(sql: SqlStorage, session: SessionInfo, cause: string | null, operations: ReadonlySet<string>): {
-  context: HarnessContext<Config>;
-  close(): void;
-} {
+export function createInitializationContext<Config>(sql: SqlStorage, session: SessionInfo, readOnly = false) {
   let active = true;
-  function assertActive(): void {
-    if (!active) throw new Error("Harness context has expired.");
-  }
+  function assertActive(): void { if (!active) throw new Error("Harness context has expired."); }
   const scopedSql: Pick<SqlStorage, "exec"> = {
     exec(query, ...bindings) {
       assertActive();
+      // Deliberately small query interface, not a general SQL parser/security boundary.
+      if (readOnly && (!/^\s*SELECT\b/i.test(query) || /;\s*\S/.test(query))) {
+        throw new Error("Planning allows single SELECT statements only; writes belong in apply().");
+      }
       return sql.exec(query, ...bindings);
     },
   };
-  const context: HarnessContext<Config> = Object.freeze({
-    session: freeze(copy(session.identity)),
-    config: freeze(copy(session.config)) as Readonly<Config>,
-    sql: Object.freeze(scopedSql),
-    requestOperation(request: OperationRequest) {
-      assertActive();
-      const parsed = parseOperationRequest(request);
-      if (!operations.has(operationKey(parsed))) {
-        throw new ContractException("INVALID_REQUEST", `Harness has not declared operation ${operationKey(parsed)}.`);
-      }
-      return insertOperation(sql, session, parsed, cause, timestamp());
-    },
+  const context: HarnessInitializationContext<Config> = Object.freeze({
+    session: session.identity, config: session.config as Readonly<Config>, sql: Object.freeze(scopedSql),
   });
-  return { context, close() { active = false; } };
+  return { context, assertActive, close() { active = false; } };
+}
+export function createReadContext<Config>(sql: SqlStorage, session: SessionInfo, sequence: number) {
+  const scope = createInitializationContext<Config>(sql, session, true);
+  const context: HarnessReadContext<Config> = Object.freeze({ ...scope.context,
+    operationId(key: string) { scope.assertActive(); return operationId(session.identity, sequence, key); },
+  });
+  return { context, close: scope.close };
 }
