@@ -121,6 +121,9 @@ importers:
       '@managed-agents/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@managed-agents/diagnostics':
+        specifier: workspace:*
+        version: link:../../packages/diagnostics
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260910.1
@@ -140,6 +143,9 @@ importers:
       '@managed-agents/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@managed-agents/diagnostics':
+        specifier: workspace:*
+        version: link:../../packages/diagnostics
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260910.1
@@ -159,6 +165,9 @@ importers:
       '@managed-agents/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@managed-agents/diagnostics':
+        specifier: workspace:*
+        version: link:../../packages/diagnostics
       '@managed-agents/harness-minimal-bash':
         specifier: workspace:*
         version: link:../../packages/harness-minimal-bash
@@ -184,6 +193,9 @@ importers:
       '@managed-agents/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@managed-agents/diagnostics':
+        specifier: workspace:*
+        version: link:../../packages/diagnostics
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260910.1
@@ -209,6 +221,9 @@ importers:
       '@managed-agents/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@managed-agents/diagnostics':
+        specifier: workspace:*
+        version: link:../../packages/diagnostics
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260910.1
@@ -231,6 +246,8 @@ importers:
 
   packages/contracts: {}
 
+  packages/diagnostics: {}
+
   packages/harness-api:
     dependencies:
       '@cloudflare/workers-types':
@@ -251,9 +268,6 @@ importers:
       '@managed-agents/harness-api':
         specifier: workspace:*
         version: link:../harness-api
-      '@managed-agents/sqlite-json':
-        specifier: workspace:*
-        version: link:../sqlite-json
     devDependencies:
       '@managed-agents/session-runtime':
         specifier: workspace:*
@@ -267,12 +281,15 @@ importers:
       '@managed-agents/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@managed-agents/diagnostics':
+        specifier: workspace:*
+        version: link:../diagnostics
       '@managed-agents/harness-api':
         specifier: workspace:*
         version: link:../harness-api
-      '@managed-agents/sqlite-json':
-        specifier: workspace:*
-        version: link:../sqlite-json
+      '@noble/hashes':
+        specifier: 2.0.1
+        version: 2.0.1
     devDependencies:
       esbuild:
         specifier: 0.27.3
@@ -280,12 +297,6 @@ importers:
       miniflare:
         specifier: 4.20260730.0
         version: 4.20260730.0
-
-  packages/sqlite-json:
-    dependencies:
-      '@cloudflare/workers-types':
-        specifier: 5.20260910.1
-        version: 5.20260910.1
 
 packages:
 
@@ -826,6 +837,10 @@ packages:
   '@jridgewell/trace-mapping@0.3.9':
     resolution: {integrity: sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ==}
 
+  '@noble/hashes@2.0.1':
+    resolution: {integrity: sha512-XlOlEbQcE9fmuXxrVTXCTlG2nlRXa9Rj3rr5Ue/+tX+nmkgbX720YHh0VR3hBF9xDvwnb8D2shVGOwNx+ulArw==}
+    engines: {node: '>= 20.19.0'}
+
   '@poppinss/colors@4.1.6':
     resolution: {integrity: sha512-H9xkIdFswbS8n1d6vmRd8+c10t2Qe+rZITbbDHHkQixH5+2x1FDGmi/0K+WgWiqQFKPSlIYB7jlH6Kpfn6Fleg==}
 
@@ -1259,6 +1274,8 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
+
+  '@noble/hashes@2.0.1': {}
 
   '@poppinss/colors@4.1.6':
     dependencies:
