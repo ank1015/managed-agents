@@ -12,7 +12,7 @@ let app: Miniflare;
 before(async () => { app = await startLocalStack({ testHost: true }); });
 after(async () => { await app?.dispose(); });
 const createBody = (requestId: string, configValue: unknown = config, metadata: Record<string, unknown> = { key: requestId }) =>
-  ({ requestId, harness: { id: "minimal-bash", version: "v1" }, config: configValue, metadata });
+  ({ requestId, harness: { id: "minimal-bash", version: "v7" }, config: configValue, metadata });
 const input = (eventId: string, type = "minimal_bash.message", text = eventId) => ({ eventId, event: { type, payload: { message: { role: "user", content: [{ type: "text", text }] } } } });
 async function request<T = Record<string, unknown>>(instance: Miniflare, path: string, method = "GET", value?: unknown, expected = 200, token = LOCAL_BACKEND_TOKEN): Promise<T> {
   const response = await instance.dispatchFetch(`https://api${path}`, { method,
@@ -35,7 +35,7 @@ test("public flow: retryable creation and input admission", async () => {
   assert.deepEqual(await create(app, "flow", config, 200), { ...first, duplicate: true });
   const listed = await request<ListSessionsResult>(app, "/v1/sessions");
   assert.deepEqual(listed.sessions.find(session => session.sessionId === id), {
-    sessionId: id, harness: { id: "minimal-bash", version: "v1" }, metadata: { key: "flow" }, status: "idle",
+    sessionId: id, harness: { id: "minimal-bash", version: "v7" }, metadata: { key: "flow" }, status: "idle",
   });
   const receipt = await request<InputReceipt>(app, sessionPath(id, "inputs"), "POST", input("echo"), 202);
   assert.deepEqual(await request(app, sessionPath(id, "inputs"), "POST", input("echo"), 202), { ...receipt, duplicate: true });
@@ -51,12 +51,12 @@ test("concurrent same-key creation reserves one session and globally rejects con
   assert.equal(results.filter(r => !r.duplicate).length, 1);
   const id = results[0]!.session.identity.sessionId;
   await create(app, "concurrent", { ...config, cwd: "/changed" }, 409);
-  await request(app, "/v1/sessions", "POST", { ...createBody("concurrent"), harness: { id: "unknown", version: "v2" } }, 409);
-  await request(app, "/v1/sessions", "POST", { ...createBody("new-unsupported"), harness: { id: "unknown", version: "v2" } }, 400);
+  await request(app, "/v1/sessions", "POST", { ...createBody("concurrent"), harness: { id: "unknown", version: "v7" } }, 409);
+  await request(app, "/v1/sessions", "POST", { ...createBody("new-unsupported"), harness: { id: "unknown", version: "v7" } }, 400);
   const other = await create(app, "different-request");
   assert.notEqual(other.session.identity.sessionId, id);
   // Object key order is not part of the retry identity.
-  await request(app, "/v1/sessions", "POST", { metadata: { key: "concurrent" }, config, harness: { version: "v1", id: "minimal-bash" }, requestId: "concurrent" });
+  await request(app, "/v1/sessions", "POST", { metadata: { key: "concurrent" }, config, harness: { version: "v7", id: "minimal-bash" }, requestId: "concurrent" });
 });
 
 test("backend auth is required and removed public routes stay unavailable", async () => {
@@ -73,6 +73,26 @@ test("backend auth is required and removed public routes stay unavailable", asyn
   await request(app, `/fixtures/${id}`, "GET", undefined, 404);
 });
 
+test("directory retains only a canonical request hash and creation retries preserve harness status", async () => {
+  const metadata = { nested: { z: 1, a: 2 }, values: [1, 2] };
+  const created = await create(app, "hashed", config, 201, metadata);
+  const id = created.session.identity.sessionId;
+  const db = await directory(app);
+  const row = await db.prepare("SELECT * FROM sessions WHERE session_id = ?").bind(id).first();
+  assert.match(row!.creation_request_hash as string, /^[a-f0-9]{64}$/);
+  for (const removed of ["creation_request_json", "creation_state", "status_revision", "status_checked_at"]) assert.equal(removed in row!, false);
+  assert.equal(JSON.stringify(row).includes(config.accountId), false);
+  assert.equal((created.session.config as { reasoning: string }).reasoning, "medium");
+  await db.prepare("UPDATE sessions SET status = 'running' WHERE session_id = ?").bind(id).run();
+  await create(app, "hashed", config, 200, { values: [1, 2], nested: { a: 2, z: 1 } });
+  assert.equal((await db.prepare("SELECT status FROM sessions WHERE session_id = ?").bind(id).first())!.status, "running");
+  await create(app, "hashed", config, 409, { ...metadata, values: [2, 1] });
+  await create(app, "hashed", { ...config, reasoning: "medium" }, 409, metadata);
+  await db.prepare("UPDATE sessions SET status = 'destroyed' WHERE session_id = ?").bind(id).run();
+  await create(app, "hashed", config, 409, metadata);
+  await request(app, sessionPath(id, "inputs"), "POST", input("retired"), 409);
+});
+
 test("validation errors survive RPC and input conflicts are rejected", async () => {
   const { session } = await create(app, "validation"); const id = session.identity.sessionId;
   await request(app, sessionPath(id, "inputs"), "POST", input("echo", "minimal_bash.message"), 202);
@@ -87,10 +107,10 @@ test("invalid creation config is a stable failure; corrected content needs a new
   await create(app, "invalid-config", { unsupported: true }, 400);
   await create(app, "invalid-config", { unsupported: true }, 400);
   await create(app, "invalid-config", config, 409);
-  const row = await (await directory(app)).prepare("SELECT session_id, creation_state FROM sessions WHERE creation_request_id = ?").bind("invalid-config").first();
-  assert.equal(row!.creation_state, "failed");
+  const row = await (await directory(app)).prepare("SELECT session_id, status FROM sessions WHERE creation_request_id = ?").bind("invalid-config").first();
+  assert.equal(row!.status, "initialization_failed");
   const failed = (await request<ListSessionsResult>(app, "/v1/sessions")).sessions.find(session => session.sessionId === row!.session_id);
-  assert.equal(failed?.status, "failed");
+  assert.equal(failed?.status, "initialization_failed");
   await create(app, "valid-new-key");
 });
 
@@ -102,12 +122,13 @@ for (const label of ["fault-before-initialize", "fault-after-initialize"]) {
     try {
       await create(instance, "retry-creation", { ...config, cwd: `/${label}` }, 503);
       const before = await (await directory(instance)).prepare("SELECT * FROM sessions WHERE creation_request_id = 'retry-creation'").first();
-      assert.equal(before!.creation_state, "initializing");
+      assert.equal(before!.status, "initializing");
+      await request(instance, sessionPath(before!.session_id as string, "inputs"), "POST", input("too-early"), 409);
       await instance.dispose(); instance = await startLocalStack(options);
       const recovered = await create(instance, "retry-creation", { ...config, cwd: `/${label}` }, 200);
       assert.equal(recovered.session.identity.sessionId, before!.session_id); assert.equal(recovered.duplicate, true);
       const after = await (await directory(instance)).prepare("SELECT * FROM sessions").all();
-      assert.equal(after.results.length, 1); assert.equal(after.results[0]!.creation_state, "ready");
+      assert.equal(after.results.length, 1); assert.equal(after.results[0]!.status, "idle");
     } finally { await instance.dispose(); await rm(path, { recursive: true, force: true }); }
   });
 }
@@ -137,7 +158,7 @@ test("HTTP errors, body limits and missing credentials fail closed", async () =>
   const unconfigured = await startLocalStack({ backendToken: "" });
   try {
     await request(unconfigured, "/v1/sessions", "POST", createBody("missing-auth"), 503);
-    const host = await unconfigured.getWorker("managed-agents-harness-minimal-bash");
+    const host = await unconfigured.getWorker("managed-agents-harness-minimal-bash-v7");
     assert.equal((await host.fetch("https://host/fixtures/anything")).status, 404);
   } finally { await unconfigured.dispose(); }
 });
