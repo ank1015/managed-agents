@@ -15,7 +15,9 @@ export interface CreateSessionRequest {
 
 export interface CreateSessionResult { session: SessionInfo; duplicate: boolean }
 
-export const SESSION_STATUSES = ["idle", "running", "failed", "cancelling", "cancelled", "waiting"] as const;
+export const HARNESS_STATUSES = ["idle", "running", "failed", "cancelling", "cancelled", "waiting"] as const;
+export type HarnessStatus = (typeof HARNESS_STATUSES)[number];
+export const SESSION_STATUSES = ["initializing", "initialization_failed", ...HARNESS_STATUSES, "destroyed"] as const;
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
 export interface SessionRecord {
@@ -40,10 +42,9 @@ export function parseCreateSessionRequest(value: unknown): CreateSessionRequest 
     config: request.config!, metadata: request.metadata };
 }
 
-/** Trusted binding protocol. JSON strings avoid recursively expanding JsonValue in RPC types. */
+/** Structured trusted-binding protocol. Each action validates its own payload. */
 export type SessionCommand =
-  | { action: "initialize" | "appendInput" | "acceptCompletion"; value: JsonValue }
-  | { action: "getOperation"; value: string }
+  | { action: "initialize" | "appendInput" | "acceptCompletion"; value: unknown }
   | { action: "getMessages" | "getPendingMessages"; value: MessagePageQuery }
   | { action: "getSession" | "getProgress" };
 export interface MessagePageQuery { after: number; limit: number }
@@ -58,13 +59,23 @@ export function parseMessagePageQuery(value: unknown): MessagePageQuery {
 export type SessionReply<T> = { ok: true; value: T } | { ok: false; error: ContractError };
 
 export function parseSessionCommand(value: unknown): SessionCommand {
-  const command = record(parseJsonValue(value), ["action", "value"], "command");
+  // Validate only the dispatch envelope here. Admission/initialization/completion
+  // validate their own payload once, instead of traversing it at every RPC layer.
+  if (value === null || typeof value !== "object" || Array.isArray(value)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    throw new ContractException("INVALID_REQUEST", "command must be a plain object.");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(value).some(key => typeof key !== "string" || !["action", "value"].includes(key)
+    || !descriptors[key]!.enumerable || !("value" in descriptors[key]!))) {
+    throw new ContractException("INVALID_REQUEST", "command contains unsupported fields.");
+  }
+  const command = value as { action?: unknown; value?: unknown };
   switch (command.action) {
     case "getMessages": case "getPendingMessages": return { action: command.action, value: parseMessagePageQuery(command.value) };
     case "getSession": case "getProgress":
       if (Object.hasOwn(command, "value")) throw new ContractException("INVALID_REQUEST", "Unexpected command value.");
       return { action: command.action };
-    case "getOperation": return { action: command.action, value: nonemptyString(command.value, "operationId") };
     case "initialize": case "appendInput": case "acceptCompletion":
       if (!Object.hasOwn(command, "value")) throw new ContractException("INVALID_REQUEST", "Missing command value.");
       return { action: command.action, value: command.value! };
