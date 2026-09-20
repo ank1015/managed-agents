@@ -1,4 +1,5 @@
-import { parseJsonValue, parseSubmitInputRequest, parseMessagePageQuery } from "@managed-agents/contracts";
+import { parseMessagePageQuery } from "@managed-agents/contracts";
+import { Logger } from "@managed-agents/diagnostics";
 import type { InputReceipt } from "@managed-agents/contracts";
 import { authenticateBackend } from "./auth.ts";
 import { callSession } from "./harness-routing.ts";
@@ -32,15 +33,19 @@ async function route(request: Request, env: Env): Promise<Response> {
     const page = parseMessagePageQuery({ ...(url.searchParams.has("after") ? { after: Number(url.searchParams.get("after")) } : {}),
       ...(url.searchParams.has("limit") ? { limit: Number(url.searchParams.get("limit")) } : {}) });
     const entry = await new SessionDirectory(env.SESSION_DIRECTORY).readyEntry(sessionId);
-    if (entry.route_key !== "minimal-bash-v1") throw notFound();
-    return json(await callSession(env, entry.route_key, sessionId, { action: match[2] === "messages" ? "getMessages" : "getPendingMessages", value: page }));
+    if (entry.route_key !== "minimal-bash-v7") throw notFound();
+    const result = await callSession<{ messages: unknown[]; nextCursor: number | null; state: Record<string, unknown> }>(env, entry.route_key, sessionId,
+      { action: match[2] === "messages" ? "getMessages" : "getPendingMessages", value: page });
+    // Display status belongs to D1; the DO returns only its execution state.
+    return json({ ...result, state: { ...result.state, status: entry.status } });
   }
   method(request, "POST");
   noQuery(url);
   const entry = await new SessionDirectory(env.SESSION_DIRECTORY).readyEntry(sessionId);
-  const input = parseSubmitInputRequest(await readJson(request));
+  // HTTP handles syntax/size; the addressed DO validates the input contract once.
+  const input = await readJson(request);
   return json(await callSession<InputReceipt>(env, entry.route_key, sessionId,
-    { action: "appendInput", value: parseJsonValue(input) }), 202);
+    { action: "appendInput", value: input }), 202);
 }
 
 export default {
@@ -49,9 +54,21 @@ export default {
     try { response = await route(request, env); }
     catch (error) {
       response = errorResponse(error);
+      if (response.status >= 500) {
+        const path = new URL(request.url).pathname;
+        const match = /^\/v1\/sessions\/(ses_[0-9a-f-]{36})\/(inputs|messages|pending-messages)$/.exec(path);
+        new Logger("agent-api", env).error("request_failed", {
+          stage: path === "/v1/sessions" ? (request.method === "POST" ? "create_session" : "list_sessions") : match?.[2] ?? "route",
+          ...(match?.[1] ? { sessionId: match[1] } : {}),
+          errorCode: "API_UNAVAILABLE", httpStatus: response.status, retryable: true,
+        });
+      }
       if (response.status === 405 && error instanceof ApiError) response.headers.set("Allow", error.message.slice(4, -1));
     }
-    if (response.status === 401) response.headers.set("WWW-Authenticate", "Bearer");
+    if (response.status === 401) {
+      response.headers.set("WWW-Authenticate", "Bearer");
+      new Logger("agent-api", env).rejection("request_unauthorized", { stage: "authenticate", httpStatus: 401 });
+    }
     if (response.status === 503) response.headers.set("Retry-After", "1");
     return response;
   },
