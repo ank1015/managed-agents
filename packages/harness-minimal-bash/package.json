@@ -10,7 +10,6 @@
     "test": "node --test test/*.test.ts"
   },
   "dependencies": {
-    "@managed-agents/sqlite-json": "workspace:*",
     "@managed-agents/contracts": "workspace:*",
     "@managed-agents/harness-api": "workspace:*",
     "@cloudflare/workers-types": "5.20260910.1"
