@@ -1,207 +1,109 @@
 # Session runtime
 
-The session engine running inside a Cloudflare SQLite-backed Durable Object. Steps 1 and 2 implement migrations, fixed configuration, durable input admission, one-event transactions, durable operations, provider dispatch/reconciliation, and recovery alarms. Import the public API from `@managed-agents/session-runtime`.
+A replay-based session engine inside a Cloudflare SQLite Durable Object. It owns durable input admission, read-only harness planning, operation submission, atomic local commit, callback admission, and inbox recovery. Operation workers own accepted jobs and reliable result delivery.
 
-This is a library. The hosting Worker chooses a harness, supplies storage and provider adapters, and exposes the desired methods. The package owns delivery mechanics; the host owns routing, authentication, HTTP protocol adapters, and deployment configuration.
+Use one `SessionDriver` per DO activation; do not mutate its database or create another processor alongside it. The host supplies authentication, routing, Worker bindings and a best-effort D1 status publisher.
 
-Use **`SessionDriver` for automatically progressing sessions**. `SessionRuntime` remains the synchronous transaction core, useful for manual diagnostics and tests. Do not create a second core or mutate its storage alongside a production driver: all admissions must go through the driver's alarm coordination.
+## Execution flow
 
-## Hosting the Step 2 driver
+1. Admission snapshots/validates the input, arms a recovery wakeup, and commits its ordered inbox entry. Identical event IDs/content return the original receipt; changed content conflicts.
+2. `prepareNext()` reads the oldest pending input and calls synchronous read-only `harness.handle`. It validates and caches an in-memory `{ changes, operations, status? }` plan. **No writes and no outgoing-payload storage.**
+3. The driver submits the independent operations outside the admission lock, with bounded concurrency (default 8). New inputs/callbacks can still be durably admitted.
+4. Once all submission outcomes are known, `commit(plan, receipts)` atomically applies harness changes, stores accepted-job receipts, queues rejected/immediate completions, consumes the source input, and removes the receipt for any completion being consumed.
+5. An explicit status intent is published after commit. The loop advances to the next inbox entry.
+
+A batch can contain any number of independent operations; the concurrency setting is not an operation-count limit. Each operation has a stable harness key. IDs are SHA-256 over `[sessionId, harnessId, harnessVersion, inputSequence, key]`, prefixed with `replay-v1:<sequence>:`. Both wire correlation fields (`operationId`, `submissionId`) use this ID. There is no independent random ID or pre-dispatch write.
+
+## Recovery and tradeoffs
+
+| Boundary | Behavior |
+|---|---|
+| Preparation fails | No submissions or local changes; input retries, then blocks on repeated handler failure. |
+| Some workers accept, another times out | Retain source input; do not commit local changes or advance later handlers. Retry the unknown submission. |
+| Warm retry | Keep prepared plan and resolved sibling receipts in memory. |
+| Restart before commit | Reconstruct the same plan and replay all submissions with the same IDs. Workers must recover the same jobs/rejections, not execute new jobs. |
+| Local commit fails after acceptance | Roll back ALL local changes; accepted external effects remain. Replay/retry the same transition, never invent new IDs. |
+| One sibling definitively rejects | Commit accepted siblings plus a synthetic failed completion for the rejected sibling. This is not a distributed all-or-nothing transaction. |
+| Callback arrives before local commit | Validate against the cached/reconstructed head plan and queue it in the ordinary inbox. It cannot overtake its source input. |
+| Callback/receipt repeats | Inbox event hash deduplicates it even after its body and pending receipt are deleted. Changed provider/job/outcome conflicts. |
+| Accepted job has no callback yet | No runtime polling/alarm just for that job. The provider owns recovery: gateway webhook retries for both stateless LLM and bash adapters. |
+
+All-or-nothing applies to **local SQLite commit**, not remote side effects. The submission barrier can delay steering/cancellation handlers behind an ambiguous batch member. Workers must retain idempotency for the full recovery horizon. The harness version, resolved config and committed state must reconstruct identical operations; changing code in an active namespace breaks that premise. Neither replay nor job deduplication guarantees exactly-once arbitrary machine effects.
+
+Accepted/rejected siblings do not require durable per-attempt receipts. This reduces writes at the cost of repeated idempotent submissions after activation loss. The source input remains durable until commit. Large contexts are rebuilt from harness history plus proposed messages, not an outbox.
+
+## Storage
+
+| Table | Data / lifetime |
+|---|---|
+| `runtime_session` | Singleton identity, resolved config and created time; immutable after initialization. Identity/config are cached, frozen per activation. |
+| `runtime_inbox` | Event ID, sequence, admission time, canonical hash, inline pending JSON body, consumed time; retry deadline/count/error/blocked state on the head input. Consumption clears body and retry metadata. Hash/receipt rows remain. |
+| `runtime_pending_operations` | Operation ID, source input sequence, key, provider and accepted job ID. Removed in the completion-handling commit. No request or outcome. |
+
+Removed: `runtime_outbox`, `runtime_operations` historical outcome ledger, and `runtime_progress`. There is no output-event table, DO status table, operation lease, per-operation retry schedule or reconciliation loop.
+
+The v7 layout uses `runtime_inbox.sequence INTEGER PRIMARY KEY` (the rowid), plus a unique non-null event ID and the pending-input partial index. Admission reads `MAX(sequence) + 1` inside the insertion transaction; there is no separate counter write. The integer primary key makes the maximum an end-of-tree lookup, not a history scan. Consumed inbox rows retain the high-water mark as well as deduplication receipts. **Do not delete the highest sequence row or clear this table** without first designing a durable high-water mark; sequence reuse would also reuse operation identities. `runtime_pending_operations` is `WITHOUT ROWID`, keyed directly by operation ID rather than a rowid plus a separate primary-key index. Admission/commit boundaries, foreign keys, retries and deduplication are unchanged.
+
+Operation inputs allow 8 MiB UTF-8 JSON and exist only in memory. Outcomes allow 1,900,000 bytes; workers must convert oversized gateway results to small terminal failures before delivery. Inbox JSON, event ID and hash must fit a 1,950,000-byte storage budget, leaving room below Cloudflare's 2 MB row limit. Oversized direct inputs are rejected atomically without allocating a sequence. All JSON is inline: there are no chunk tables, manifests or chunk helpers. There is no R2 reference layer or retention policy for consumed input hashes/harness history. Inline storage was deployed in v5, with completion-admission code changes deployed in v6. V7 changes the fixed SQLite layout without adding tables and is deployed in another fresh namespace. See the [deployment guide](../../DEPLOYMENT.md). Retained v4 chunked storage is not compatible. See the [deployment guide](../../DEPLOYMENT.md).
+
+## Hosting
 
 ```ts
-import { SessionDriver } from "@managed-agents/session-runtime";
-
-// In a SQLite-backed Durable Object's constructor:
 this.driver = new SessionDriver(ctx.storage, harness, {
-  providers: { echo: echoProvider }, // Implements OperationProvider; deployment-owned auth/transport.
+  providers: { llm: llmProvider, "tool-pi-bash": bashProvider },
   waitUntil: promise => ctx.waitUntil(promise),
+  onStatusChange: status => publisher.publish(sessionId, status),
 });
-
-// Forward the Durable Object's alarm method:
 async alarm() { await this.driver.alarm(); }
-
-// Authorized host entrypoints await durable admission, which also requests prompt progress:
-await this.driver.initialize({ session: identity, config: {} });
-await this.driver.appendInput({ eventId: "user:1", event: { type: "message", payload: "hello" } });
-// Authenticate provider callbacks separately before admission:
-await this.driver.acceptCompletion(normalizedCallback);
 ```
 
-Keep one driver per object activation and forward every alarm. Its constructor checks provider configuration and applies schema migrations synchronously without scheduling alarms. The host may use `run()` to explicitly request a bounded progress slice; merely constructing a driver does not invent a wakeup for work previously admitted through the manual core.
+`OperationProvider` exposes only `submit(submission, signal)`. Return `accepted {jobId}`, `completed {jobId,outcome}`, or a definitive `rejected {error}`; throw for unknown/transient outcomes. Acceptance means the provider stack durably owns execution and completion delivery; that durability may live in the gateway rather than another Worker database. The stateless LLM and bash adapters rely on finite gateway webhook retries, so exhausted delivery needs operator redelivery and can leave a session waiting. Propagate abort signals where supported. Return promptly after acceptance, not after the harness processes the result.
 
-| Driver API | Behavior |
+The driver requires a configured adapter for every declared provider, and rejects undeclared provider/type/version combinations before any call. Adapters determine destination/authentication; harness requests contain neither URLs nor credentials.
+
+Production Worker adapters use structured submit RPC and unwrap `{ result: ProviderSubmitResult }` with `parseProviderSubmitReply`. The envelope isolates Cloudflare's outer-object disposal metadata from strict JSON validation; the helper disposes the reply. The stateless operation-worker bindings expose only submission; diagnostic `get` RPCs are removed.
+
+## API
+
+| Driver method | Meaning |
 |---|---|
-| `initialize`, `appendInput`, `acceptCompletion` | Async admission: establish recovery wakeup, commit synchronously, then request prompt progress with `waitUntil`. |
-| `alarm()` | Replace the consumed recovery wakeup and run/join a bounded progress slice. |
-| `run()` | Process inbox transitions and eligible deliveries/reconciliation; concurrent calls join one loop. |
-| `resumeProcessing()` | Clear a blocked/failed input's retry state and retry it; never discard an input. |
-| `getSession`, `getOperation` | Synchronous detached reads. Operation info includes provider/type/version, correlation, job handle, outcome, causation/timestamps and `reconcileError`; it never includes the original input. |
-| `getProcessingStatus()` | Pending head input, failure count, retry time, blocked flag and last error. |
+| `initialize` | Local config/harness initialization only, no alarm/kick/status/operation. |
+| `appendInput`, `acceptCompletion` | Pre-arm pending work, commit admission, start/join background processing, return durable receipt. Already-consumed duplicate completions return immediately without alarm work or a processing kick. |
+| `run`, `alarm` | One bounded, single-flight processing slice. |
+| `resumeProcessing` | Explicitly reset the blocked/failed head's retry state and retry it; never skip it. |
+| `getSession` | Detached session metadata/config. |
+| `getPendingOperations` | Small currently pending acceptance receipts, not operation history. |
+| `getProcessingStatus` | Head event ID, attempts, retry deadline, last error and blocked flag. |
 
-The async admission methods snapshot validated caller data before awaiting storage. An admission receipt confirms retained work, not completed processing. Admissions remain available while the dispatcher awaits a provider; their transitions run when the active bounded provider request finishes (or times out). Provider submission calls are sequential initially; accepted external jobs can execute concurrently.
+The synchronous `SessionRuntime` exposes initialization/admission/reads plus `prepareNext()` and `commit(prepared, receipts)`. Its `prepareCompletion(value)` snapshots, validates and hashes once before async admission. The returned check closure performs one dedup lookup and correlation checks, then supplies a commit closure; callers must keep check/commit and any alarm await inside the same serialized admission scope. Normal hosts should use `SessionDriver.acceptCompletion`, which enforces that scope. It does not dispatch or schedule alarms. A prepared plan must belong to that runtime; receipts must cover every planned operation exactly once. `processNext` and `getOperation` are removed.
 
-## Provider adapters and operation delivery
+Initialization stores only resolved defaults and checks identity on retry. The API's creation hash gate owns content conflicts. Fixed runtime/harness tables bootstrap once; no in-place upgrades. All hooks are synchronous and invocation-scoped. See [harness API](../harness-api/README.md) for deterministic planning requirements.
 
-`OperationProvider` exposes async `submit(submission, signal)` and `get(query, signal)`. The driver injects an abort signal and enforces a timeout even if an adapter ignores it; adapters should propagate the signal to their transport. Configure providers by logical name in `ProviderRegistry`. The harness declares exact `{ provider, type, version }` combinations in `operations`; undeclared requests fail before insertion, and the driver refuses construction if any declared provider lacks an adapter. Adapters connect to implemented operation workers using the contracts DTOs and must honor their durable acceptance/idempotency rules. Worker storage, queues, gateway integration, authentication and session return routing belong outside this package.
+## Alarms and limits
 
-The context's `requestOperation` allocates a local UUID and stores provider/type/version in `runtime_operations` and immutable input in `runtime_outbox`, inside the harness transaction. The submission identity is a persisted JSON tuple of session ID, harness ID/version and local operation ID. It is opaque to the provider and stays unchanged on retries. Operation IDs created in uncommitted attempts are discarded. Operation declarations are snapshotted at construction so harness mutations cannot change the active allowlist.
+New inputs/completions establish an alarm **before** durable admission; alarm failure cannot acknowledge unprotected work. Admission-triggered slices reuse that protection without checking the alarm a second time; an explicit `run()` or fired `alarm()` establishes it itself. A matching consumed completion only reads its retained inbox hash and returns its receipt—no alarm or empty processing slice. Matching unconsumed completions still arm recovery and kick processing. A per-instance queue serializes alarm operations, admission, planning and local commit, but never network submission. Final alarm decisions use the pending inbox head only, avoiding a race between admission and idle alarm deletion.
 
-Delivery takes these steps:
-
-1. Select an eligible committed outbox action or reconciliation deadline.
-2. In a short transaction, increment its attempt count, assign an attempt token and persist a lease deadline.
-3. Await the provider outside any transaction or admission lock.
-4. In another short transaction, record acceptance, completion, definitive rejection, or a retry deadline.
-
-An interrupted `submitting` action becomes eligible at its lease deadline. Each new attempt uses the same submission ID but a fresh token; stale responses cannot change a newer attempt's state. Throws, timeouts and malformed responses retry with bounded exponential backoff and jitter. No retry limit turns uncertain provider delivery into fabricated terminal failure. A definitive rejection becomes a submission-origin failed completion.
-
-Acceptance stores the worker job handle, schedules status reconciliation, and deletes the outbox row and its input in one transaction. The worker now owns execution/recovery. Definitive rejection and immediate completion also delete the outbox row. Before acceptance, uncertain delivery retains its input for retries. There is no `delivered` outbox state or retained request snapshot after handoff.
-
-Missing callbacks are recovered via `get`, carrying only operation/submission/job IDs. A `missing` accepted job is recorded as a recovery/contract error and retried through status queries with backoff; it never recreates the outbox or resubmits work. Successful pending status checks reset consecutive reconciliation failure backoff and clear the error. Submission errors stay in the temporary outbox; reconciliation counters/deadlines and the bounded `reconcile_error` remain with the operation and are visible through `OperationInfo.reconcileError`.
-
-Completion admission validates the expected provider, submission ID and any known job handle. The first result commits its outcome and one runtime inbox event together. Identical callbacks return the original receipt; changed correlation/outcomes fail. A callback may establish the job handle before submit returns. Later acknowledgements or errors cannot regress a terminal result. The harness handles the runtime event in a separate transaction; a handler failure does not erase the admitted provider outcome. Callbacks and reconciliation share this completion path.
-
-## Recovery wakeups, budgets and failures
-
-The recovery protocol deliberately establishes an alarm **before** committing newly admitted work. If alarm creation fails, no work is admitted. Interruption before the commit may leave an extra alarm; interruption after it leaves retained work with a wakeup. Each progress slice also establishes a recovery alarm before processing or awaiting external calls. Entering `alarm()` consumes a wakeup, so it re-arms even when joining an already running slice.
-
-A per-instance queue serializes alarm read/set/delete operations with admissions and short local state changes. It is never held across provider I/O. At the end of a slice the driver computes the earliest inbox retry, outbox lease/retry, or reconciliation deadline and updates the single alarm while holding that same queue. If there is no runnable or scheduled work, it clears the alarm. A concurrent admission therefore cannot be committed between an idle snapshot and alarm deletion. Failed rescheduling leaves the previously established recovery alarm. Unexpected internal/storage errors reject the background task/alarm; the recovery wakeup and platform alarm retries are the remaining fallback.
-
-`waitUntil` starts processing promptly after admission. Alarms provide recovery and bounded continuations, rather than polling for every user message. The following `policy` overrides are available:
+The driver kicks processing before returning admission, but the receipt does not promise that a handler ran or committed. `waitUntil` is not durable recovery. No alarm is scheduled during initialization or solely because accepted jobs exist.
 
 | Policy | Default |
 |---|---:|
-| `maxSteps` (each step can process one input and one delivery) | 32 |
-| `maxSliceMs` (checked between steps) | 250 ms |
-| `providerTimeoutMs` | 10,000 ms |
-| `attemptLeaseMs` (must exceed provider timeout) | 15,000 ms |
-| `recoveryMs` | 30,000 ms |
-| `continuationMs` | 1 ms |
-| `retryBaseMs` / `retryMaxMs` | 500 / 60,000 ms |
-| `reconcileMs` | 30,000 ms |
-| `maxHandlerFailures` | 5 |
+| maxSteps / maxSliceMs (checked between transitions) | 32 / 250 ms |
+| providerTimeoutMs | 10,000 ms |
+| submissionConcurrency | 8 |
+| recoveryMs / continuationMs | 30,000 / 1 ms |
+| retryBaseMs / retryMaxMs | 500 / 60,000 ms |
+| maxHandlerFailures | 5 |
 
-These are configuration defaults, not latency guarantees. A running synchronous transition cannot be preempted; one provider call can exceed the slice budget up to its timeout. Platform alarm delivery may also be delayed. Finite integer policy values are validated at construction.
+Transport ambiguity keeps retrying the same head with bounded exponential backoff/jitter; it never becomes a fabricated rejection. Repeated preparation/apply failures block the head. Later admissions remain available, but handlers cannot overtake it. Blocked heads clear their alarm until explicitly resumed. Status remains harness-owned, not inferred from processing errors.
 
-A failed handler rolls back first; the driver then records the failed event and backoff outside that transaction. After `maxHandlerFailures`, processing is explicitly blocked on that event. Later inputs and completions are still admitted, and already committed provider work still progresses. A blocked input alone has no retry alarm, avoiding a hot failure loop. Fix the harness and invoke `resumeProcessing()` to retry the retained input. Runtime infrastructure failures are not silently converted into harness success or skipped events.
+Budgets do not preempt synchronous work or a whole submission batch. Timeouts do not prove non-acceptance, and RPC cannot necessarily be cancelled. Known late results cannot commit independently of the active processor. No hard cancellation, compaction, streaming or session-wide quota is implemented.
 
-The runtime does not implement cancellation delivery/policy, real operation workers, public API routing, streaming, large-result storage or history/result pruning. Request input cleanup at handoff is implemented. The success and retry guarantees depend on providers preserving job identity and queryable terminal results; they do not imply exactly-once arbitrary external side effects.
+## Completion-admission work
 
-## Using the synchronous core
+For a warm session with a committed pending operation, new completion admission uses four SQL statements: one inbox dedup read, one pending-operation read, one sequence lookup and one inbox insert. Only the insert writes rows. A consumed duplicate uses one read, including after restart once session metadata is loaded. Cold bootstrap/session reads and early-callback plan reconstruction are additional work. Hash/conflict checks and durable recovery are retained.
 
-```ts
-import { SessionRuntime } from "@managed-agents/session-runtime";
+Inbox admission and harness processing remain **separate stages/transactions**. The callback is acknowledged after admission; it does not wait for harness handling or downstream operation acceptance.
 
-// In the session Durable Object's constructor, using its chosen harness:
-const runtime = new SessionRuntime(ctx.storage, harness);
+## Validation
 
-const initialized = runtime.initialize({
-  session: {
-    sessionId: "session-123",
-    harness: harness.identity,
-  },
-  config: {}, // The selected harness defines its configuration.
-});
-
-const receipt = runtime.appendInput({
-  eventId: "producer-event-1",
-  event: { type: "message", payload: { text: "Hello" } },
-});
-
-const transition = runtime.processNext();
-```
-
-The example event and config must be supported by the selected harness. Keep one runtime instance per object. All methods are synchronous. Construction completes schema work before returning; if it throws, the host must not serve requests using that runtime. If the host later adds asynchronous startup, it must gate request delivery until startup completes.
-
-| API | Behavior |
-|---|---|
-| `new SessionRuntime(storage, harness)` | Validate and apply migrations, check an existing session's harness identity. Does not initialize a session or process inputs. |
-| `initialize(unknown)` | Return `{ session, duplicate }`; atomically create metadata and harness initial state. |
-| `appendInput(unknown)` | Return an `InputReceipt`; persist a newly validated event or recover the original receipt. Does not invoke `handle`. |
-| `processNext()` | Handle the oldest pending event in one transaction. Return `{ processed: true, eventId, sequence }` or `{ processed: false }`. Throw on failure. |
-| `getSession()` | Return a detached `SessionInfo` with persisted normalized config. |
-| `acceptCompletion(unknown)` | Atomically retain an authenticated normalized provider result and completion input. No automatic processing. |
-| `getOperation(id)` | Return detached operation info or throw `OPERATION_NOT_FOUND`. |
-
-Except for initialization, session methods require an initialized session and otherwise throw `SESSION_NOT_INITIALIZED`. Boundary requests are validated using the contracts package. `getSession()` exposes JSON configuration; typed configuration is provided to the selected harness's context.
-
-`RuntimeStorage` is a `Pick` of Cloudflare's `DurableObjectStorage`, containing `sql` and `transactionSync`. It is not an alternative database implementation. The runtime relies on Cloudflare's transaction and response/output-gate behavior. A synchronous method result inside the object is not a separate network delivery acknowledgement; return it through the normal Durable Object response path.
-
-## Initialization and configuration
-
-The runtime stores both the original JSON config request and the validated/defaulted JSON config. A retry must match the original identity and original config structurally; object key order does not matter. Supplying explicit defaults where the original request omitted them is a conflicting request, even if both would normalize to the same config.
-
-Matching retries return the saved config and creation time without calling `parseConfig` or `initialize` again. Conflicting session identity, harness, or original config throws `INITIALIZATION_CONFLICT`. The runtime checks the hosting harness's ID and version both when opening an existing session and when initializing.
-
-For a new session, `parseConfig` receives a detached copy. Its result must be synchronous and JSON-compatible. Metadata and initialization writes share one transaction. A thrown exception or non-`undefined` initialization result rolls them back. Completed schema migrations remain; initialization can retry against those tables.
-
-The saved config is loaded for every invocation without rerunning defaults or validation. Compatible harness releases must understand the stored normalized config. Configuration changes are not part of this API.
-
-## Admission and transitions
-
-Event IDs are unique within a session. Retries compare the full event body structurally before calling the harness parser. An identical pending or consumed event returns its original sequence and admission time with `duplicate: true`; a changed body throws `INPUT_CONFLICT`.
-
-For new IDs, `parseInput` validates a detached event and must preserve its content. Rewriting either its argument or returned value is rejected. Sequence allocation and insertion occur atomically, so rejected inputs do not consume sequence numbers. Already admitted events are not revalidated during processing; compatible deployments must continue to handle them.
-
-Each `processNext()` transaction:
-
-1. Loads the saved session and lowest pending input sequence.
-2. Creates an invocation-scoped context and invokes the synchronous handler.
-3. Records harness SQL writes and operation requests inside that transaction.
-4. Requires an `undefined` handler result and marks the input consumed.
-5. Commits everything together, or rolls everything back if any step throws.
-
-A failure keeps the input pending, including when the handler succeeded but the consumption write failed. Earlier committed transitions remain. The runtime never skips a failing input: later inputs remain pending until the failure is resolved. Handler execution can retry; only successful transition effects commit once. In-memory harness mutations are not rolled back by SQLite and must not be authoritative state.
-
-The manual core may call `processNext()` in a bounded loop. Each call owns a separate transaction. Its methods alone do not schedule alarms or dispatch work; automatic progress belongs to `SessionDriver` above.
-
-## Context
-
-The context includes detached, deeply frozen session identity and configuration, a scoped `sql.exec`, and `requestOperation`. The admitted input envelope passed to `handle` is also frozen. SQL access and operation requests expire when the hook returns or throws. Calls retained for later use fail, and reentrant calls into the runtime are rejected.
-
-Harness code is trusted. It must use only its own tables, fully consume cursors synchronously, and never retain contexts/cursors, take transaction ownership, schedule later work, or perform external I/O during a transition. The wrapper does not sandbox raw SQL or revoke already returned SQL cursors. Detecting a returned promise cannot cancel external work an incorrectly written hook already started. Type-level restrictions, runtime checks, and harness discipline work together.
-
-## Storage and migrations
-
-Operation inputs and complete outcomes are limited separately to 8 MiB of UTF-8 JSON by the shared contract parsers before persistence. The [sqlite-json helper](../sqlite-json/README.md) keeps values up to 256 KiB inline and stores larger values in ordered chunk rows; the owning field holds a small manifest. The same mechanism covers completion inbox events. Row writes, chunk writes, input consumption and request-chunk cleanup share existing synchronous transactions. Failed commits leave no orphan chunks or partial cleanup. The LLM worker converts oversized upstream results into an explicit failure containing the gateway job ID rather than truncating them. There are no R2 payload references.
-
-| Table | Owned data |
-|---|---|
-| `runtime_migrations` | Separate `runtime` and `harness` histories, versions, exact serialized SQL statement lists. |
-| `runtime_session` | Singleton identity, original/normalized config, creation time, last input sequence. |
-| `runtime_inbox` | Unique event IDs, admission order/time, original event bodies, nullable consumption time. |
-| `runtime_operations` | Provider/type/version, submission identities, worker job handles, terminal outcomes, completion correlation, reconciliation deadlines/tokens/error. No request input. |
-| `runtime_outbox` | Temporary immutable `input_json`, submission state (`pending`, `submitting`), attempt counts/tokens, retry/lease deadline and latest submission error. Deleted on acceptance or terminal outcome. |
-| `runtime_json_chunks` | Ordered large-payload chunks for outbox input, outcomes and inbox events; each owning field has its own manifest. Request chunks are deleted together with the outbox. Outcomes and consumed inbox chunks remain retained. |
-| `runtime_progress` | Failed head input, consecutive attempts, retry deadline and explicit blocked state. |
-
-Runtime migration 3 adds the chunk table without changing previous migration SQL. Existing inline JSON remains readable; new `_json` field values can be either JSON or an internal manifest and must be read through the helper, never SQL JSON functions blindly. Harnesses persisting large operation results must use their own chunk table too; minimal-bash migration 2 implements this for native transcript/metadata and pending messages. No reset of existing session databases is needed for these additive migrations.
-
-The runtime reserves the `runtime_` table/index prefix, external event types beginning `runtime.` and event IDs beginning `runtime:`. The inbox has a partial index on pending input sequence; operations/outbox index their deadlines. Consumed inputs and completed operations remain available for deduplication; there is no pruning or retention policy yet. Counters store the last allocated sequence, initially zero, so allocation can include the largest safe integer without persisting an unsafe successor.
-
-This is a breaking schema/contract revision: runtime migration 2 defines the new tables directly, with no upgrade path from the former retained-request schema. Existing databases with that migration history are rejected; use fresh session databases. Harness definitions must supply `operations`, and operation reads no longer return `request`. Harness input types include `RuntimeEvent`; harnesses must handle or explicitly reject that branch before accessing their own payloads.
-
-The migration history table bootstraps itself. Both migration definitions and both existing histories are checked before applying new migrations. Applied definitions must remain an unchanged prefix: editing SQL (including whitespace), removing versions, inserting versions before already applied migrations, and opening with an older migration list fail closed. New versions can have gaps but must be strictly increasing.
-
-Each migration and its history row share one transaction. If a migration fails, earlier successful migrations remain; its own schema/data changes and history row roll back. The same constructor can be retried after repairing an unapplied migration. Initialized sessions reject a different harness before running its pending harness migrations. An uninitialized database is still tied to the selected deployment and must not be reused for another harness.
-
-SQL migrations belong to this library and the harness. They are separate from Cloudflare class/namespace deployment migrations. Put session-specific initial state in the harness's `initialize` hook, not schema migrations.
-
-## Files and checks
-
-`src/runtime.ts` owns the public lifecycle and transaction boundaries. `context.ts` builds scoped capabilities, `migrations.ts` applies histories, and `storage/` contains runtime schema and SQL operations. Internal helpers are not exported from the package entry point.
-
-```sh
-pnpm --filter @managed-agents/session-runtime check
-pnpm check
-```
-
-Tests bundle the fixtures with esbuild and run them in Miniflare/workerd with SQLite-backed Durable Objects. Fixtures expose SQL and deliberately broken behaviors solely for tests; they must not be deployed. `operations-fixture.ts` also runs a provider in a separate Durable Object/database so its jobs survive session interruption. Restart tests dispose the entire local runtime and reopen temporary persisted databases. `driver.test.ts` uses real Node SQLite plus controllable async alarm methods to interrupt precise admission/commit/reschedule boundaries. No Cloudflare account or cloud deployment is required.
-
-Coverage includes initialization conflicts/rollback, migrations and history drift, ordered admission, retries before/after consumption, concurrent deliveries, invalid validators, transition rollback, consumption-write failure, sequence overflow, scoped context expiry, object isolation, and process restart. Dependency versions are pinned; workspace build permissions cover esbuild and workerd's binary installation scripts.
-
-Operation tests cover declaration/configuration validation, operation rollback/context expiry, atomic acceptance/input deletion, completion atomicity, reserved events, conflicting/duplicate callbacks after cleanup, early callbacks, lost acceptance responses, stale attempt tokens, provider timeouts, delayed/missing callbacks, missing accepted jobs without resubmission, reconciliation failures, concurrent input, bounded continuations, blocked processing/resume, pre-commit alarm failure, interrupted rescheduling and full process recovery before and after request cleanup with one durable provider job.
-
-This package retains its smaller fault-injection fixtures for precise runtime boundary checks. The [LLM operation worker](../../apps/llm-gateway-workers/README.md) implements gateway submission, polling and durable callback delivery. The [minimal-bash harness](../harness-minimal-bash/README.md) and [host](../../apps/harness-minimal-bash/README.md) implement the coding loop, steering, graceful turn-boundary cancellation and D1 status projection on top of this unchanged runtime. Hard operation cancellation remains unimplemented.
-
-Platform references: [SQLite storage and transactions](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/), [alarms and retry semantics](https://developers.cloudflare.com/durable-objects/api/alarms/), [Miniflare configuration](https://github.com/cloudflare/workers-sdk/tree/main/packages/miniflare#readme).
+`pnpm --filter @managed-agents/session-runtime check` covers real SQLite and workerd: multi-operation/mixed batches, partial acceptance, warm/cold replay, stable IDs, read-only planning, atomic apply/cleanup, early callbacks, duplicate/conflicting completions, maximum-size inline results, 8 MiB in-memory requests, alarms, poisoning/resume and process restart. App tests add actual Worker RPC and complete minimal-bash loops with deterministic fake upstreams.

@@ -11,11 +11,11 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
     "test": "node --test test/*.test.ts"
   },
-  "dependencies": {
-    "@managed-agents/sqlite-json": "workspace:*",
+  "dependencies": { "@managed-agents/diagnostics": "workspace:*",
     "@cloudflare/workers-types": "5.20260910.1",
     "@managed-agents/contracts": "workspace:*",
-    "@managed-agents/harness-api": "workspace:*"
+    "@managed-agents/harness-api": "workspace:*",
+    "@noble/hashes": "2.0.1"
   },
   "devDependencies": {
     "esbuild": "0.27.3",
