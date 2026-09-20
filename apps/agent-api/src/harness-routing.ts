@@ -5,7 +5,7 @@ import type { Env, SessionNamespace } from "./types.ts";
 
 // Deployment metadata only. Route keys and existing namespace bindings must remain stable.
 const routes = [
-  { key: "minimal-bash-v1", harness: { id: "minimal-bash", version: "v1" }, binding: "MINIMAL_BASH_SESSIONS" },
+  { key: "minimal-bash-v7", harness: { id: "minimal-bash", version: "v7" }, binding: "MINIMAL_BASH_SESSIONS" },
 ] as const;
 export function creationRoute(harness: HarnessIdentity) {
   const route = routes.find(route => harness.id === route.harness.id && harness.version === route.harness.version);
@@ -20,7 +20,7 @@ export function routeNamespace(env: Env, key: string): SessionNamespace {
 }
 export async function callSession<T>(env: Env, routeKey: string, sessionId: string, command: SessionCommand): Promise<T> {
   const namespace = routeNamespace(env, routeKey);
-  const reply = JSON.parse(await namespace.get(namespace.idFromName(sessionId)).sessionRequest(JSON.stringify(command))) as SessionReply<T>;
+  const reply = await namespace.get(namespace.idFromName(sessionId)).sessionRequest(command) as SessionReply<T>;
   if (!reply.ok) throw new ContractException(reply.error.code, reply.error.message);
   return reply.value;
 }
