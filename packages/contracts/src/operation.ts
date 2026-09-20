@@ -1,12 +1,13 @@
+/// <reference lib="esnext.disposable" />
 import { ContractException } from "./errors.ts";
 import { parseJsonValue } from "./json.ts";
 import type { JsonValue } from "./json.ts";
 import { nonemptyString, record } from "./validation.ts";
 
 export type OperationId = string;
-/** Wire payload bounds; persistence uses chunked SQLite rows for large JSON. */
+/** Requests are in memory; outcomes must fit an inline inbox/message row. */
 export const MAX_OPERATION_INPUT_BYTES = 8 * 1024 * 1024;
-export const MAX_OPERATION_OUTCOME_BYTES = 8 * 1024 * 1024;
+export const MAX_OPERATION_OUTCOME_BYTES = 1_900_000;
 
 export function assertJsonSize(value: JsonValue, maximum: number): void {
   if (new TextEncoder().encode(JSON.stringify(value)).byteLength > maximum) {
@@ -31,7 +32,7 @@ export type OperationOutcome =
   | { status: "failed"; origin: "submission" | "execution"; error: OperationFailure }
   | { status: "cancelled" };
 
-/** Persisted before dispatch; echoed by callbacks, including callbacks preceding the submit response. */
+/** Stable across replay; derived without a pre-dispatch write and echoed by callbacks. */
 export interface OperationCorrelation {
   operationId: OperationId;
   submissionId: string;
@@ -57,6 +58,20 @@ export type ProviderStatusResult =
   /** A recovery/contract error for an accepted job; never authorizes resubmission. */
   | { status: "missing" };
 
+/** RPC adds disposal metadata to the outer object; keep JSON data in a nested field. */
+export interface ProviderSubmitReply { result: ProviderSubmitResult }
+export function parseProviderSubmitReply(reply: unknown): ProviderSubmitResult {
+  if (!reply || typeof reply !== "object") throw new ContractException("INVALID_REQUEST", "Invalid submission RPC reply.");
+  try {
+    const field = Object.getOwnPropertyDescriptor(reply, "result");
+    if (!field?.enumerable || !("value" in field)) throw new ContractException("INVALID_REQUEST", "Missing submission result.");
+    return parseProviderSubmitResult(field.value);
+  } finally {
+    const dispose = Object.getOwnPropertyDescriptor(reply, Symbol.dispose)?.value;
+    if (typeof dispose === "function") dispose.call(reply);
+  }
+}
+
 /** The host authenticates the provider before passing this normalized value to the runtime. */
 export interface OperationCompletion extends OperationCorrelation {
   provider: string;
@@ -66,7 +81,7 @@ export interface OperationCompletion extends OperationCorrelation {
 
 export type OperationCompletedEvent = {
   type: "runtime.operation.completed";
-  payload: { operationId: OperationId; outcome: OperationOutcome };
+  payload: { operationId: OperationId; provider: string; jobId: string | null; outcome: OperationOutcome };
 };
 export type RuntimeEvent = OperationCompletedEvent;
 
