@@ -1,20 +1,23 @@
-import type { EventBody, HarnessIdentity, InputEnvelope, JsonValue, OperationDefinition, RuntimeEvent } from "@managed-agents/contracts";
-import type { HarnessContext } from "./context.ts";
-import type { SqlMigration } from "./migrations.ts";
+import type { EventBody, HarnessIdentity, HarnessStatus, InputEnvelope, JsonValue, OperationDefinition, OperationRequest, RuntimeEvent } from "@managed-agents/contracts";
+import type { HarnessInitializationContext, HarnessReadContext, HarnessWriteContext } from "./context.ts";
 
-export interface HarnessDefinition<Config, Input extends EventBody> {
+export interface PlannedOperation extends OperationRequest { key: string }
+export interface TransitionPlan<Changes> {
+  /** JSON-compatible, in-memory only. Never persisted by the runtime. */
+  changes: Changes;
+  /** Independent operations; array order does not imply execution order. */
+  operations: readonly PlannedOperation[];
+  status?: HarnessStatus;
+}
+export interface HarnessDefinition<Config, Input extends EventBody, Changes = unknown> {
   readonly identity: HarnessIdentity;
-  readonly migrations: readonly SqlMigration[];
-  /** Exact provider/type/version combinations this harness may request. The host supplies adapters. */
+  readonly schema: readonly string[];
   readonly operations: readonly Readonly<OperationDefinition>[];
-
-  /** Synchronous, state-independent validation; returned defaults must remain JSON-compatible. */
   parseConfig(value: JsonValue): Config;
-  /** Validate supported event shapes without rewriting content or consulting session state. */
   parseInput(event: EventBody): Input;
-
-  /** Initial state commits once; uncommitted attempts may retry. Throw to roll back. */
-  initialize(ctx: HarnessContext<Config>): undefined;
-  /** One admitted input per transaction. No promises, external I/O, or retained context. */
-  handle(input: InputEnvelope<Input | RuntimeEvent>, ctx: HarnessContext<Config>): undefined;
+  initialize(ctx: HarnessInitializationContext<Config>): undefined;
+  /** Deterministic read-only planning. No promises, writes, random values, or external I/O. */
+  handle(input: InputEnvelope<Input | RuntimeEvent>, ctx: HarnessReadContext<Config>): TransitionPlan<Changes>;
+  /** Apply the prepared decision synchronously. Runtime owns the transaction and input consumption. */
+  apply(changes: Changes, ctx: HarnessWriteContext<Config>): undefined;
 }

@@ -1,64 +1,67 @@
 # Harness API
 
-The in-process contract between a trusted harness and the session runtime (Steps 1 and 2). Import from `@managed-agents/harness-api`.
+The in-process contract between a trusted harness and the replay-based session runtime. Import from `@managed-agents/harness-api`.
 
 ## Definition
 
-`HarnessDefinition<Config, Input>` supplies:
+`HarnessDefinition<Config, Input, Changes>` supplies:
 
-- `identity`: harness ID and behavior version.
-- `migrations`: ordered SQL schema migrations.
-- `operations`: exact `{ provider, type, version }` combinations the harness may request; use `[]` when none are needed.
-- `parseConfig`: synchronous validation/defaulting of JSON config.
-- `parseInput`: synchronous structural validation, preserving event content and independent of current session state.
-- `initialize`: initial harness data inside the runtime's initialization transaction.
-- `handle`: one admitted external input or runtime event per runtime-owned transaction (`InputEnvelope<Input | RuntimeEvent>`).
+- `identity` and `schema`: immutable harness-version identity and fixed SQL bootstrap statements.
+- `operations`: exact supported `{ provider, type, version }` combinations.
+- `parseConfig`: synchronous validation/defaulting; only its resolved JSON result is persisted.
+- `parseInput`: synchronous, state-independent validation preserving external event content.
+- `initialize(ctx)`: synchronous local initial writes; returns `undefined`.
+- `handle(input, ctx)`: synchronous **read-only deterministic planning**.
+- `apply(changes, ctx)`: synchronous local writes inside the runtime's commit transaction; returns `undefined`.
 
-`initialize` and `handle` return `undefined`, not `void`, to reject promise-returning functions at compile time. State is written through the context rather than returned. Errors must propagate out of the transaction callback for rollback.
-
-Config is generic to accommodate typed harness interfaces. The runtime must validate the parsed/defaulted result with `parseJsonValue` before persistence; a generic TypeScript parameter does not prove JSON compatibility. The runtime must also validate inputs before admission.
-
-## Context
-
-`HarnessContext<Config>` exposes session identity, readonly config, `sql.exec`, and `requestOperation(request)`. Cloudflare SQL types are imported explicitly so this package does not require consumers to enable a second set of ambient Worker globals. The Cloudflare dependency is type-only at runtime.
-
-SQL access is for harness-owned tables. It does not sandbox those tables from runtime tables. Harness code is trusted; it must not retain contexts/cursors, schedule later writes, mutate configuration, invoke external services, or take transaction ownership. Fully consume SQL cursors during the invocation.
-
-The interface's `readonly` is shallow; the [session runtime](../session-runtime/README.md) additionally deep-freezes detached config and identity and expires context access after each invocation. Database rollback does not reverse changes to other JavaScript objects.
-
-`requestOperation({ provider, type, version, input })` synchronously returns a new local operation ID. It records operation metadata and an outbox entry containing the immutable input in the current transaction. Save the ID alongside harness-owned context before returning. A throw rolls back the operation, outbox, harness writes, and input consumption together. Generated IDs from rolled-back attempts need not be reused; no provider may observe those attempts. Calls after the context expires fail. The runtime deletes the outbox input after durable acceptance or a terminal result; the harness must retain any context it needs to interpret completion in its own tables.
-
-Declare every supported combination on the harness definition, for example `operations: [{ provider: "echo", type: "echo", version: "v1" }]`. Declarations are validated and snapshotted when the runtime is constructed. Undeclared requests fail synchronously with `INVALID_REQUEST`; duplicate declarations are rejected. The hosting app supplies provider adapters, and the driver refuses to start if a declared provider has no configured adapter. These declarations contain no URLs, bindings, or credentials.
-
-Both `initialize` and `handle` may request operations. Delivery starts after commit through the runtime driver. Harness code never waits for submission and receives no provider client, timer, or retry capability.
-
-The runtime later admits `runtime.operation.completed` with `{ operationId, outcome }`. Handle this branch before reading a payload specific to your external input union:
+`handle` returns:
 
 ```ts
-handle(input, ctx) {
-  if (input.event.type === "runtime.operation.completed") {
-    const { operationId, outcome } = input.event.payload;
-    ctx.sql.exec("UPDATE pending SET outcome_json = ? WHERE operation_id = ?",
-      JSON.stringify(outcome), operationId).toArray();
-    return;
-  }
-  const operationId = ctx.requestOperation({
-    provider: "echo", type: "echo", version: "v1", input: input.event.payload,
-  });
-  ctx.sql.exec("INSERT INTO pending(operation_id) VALUES (?)", operationId).toArray();
+interface TransitionPlan<Changes> {
+  changes: Changes; // JSON-compatible, in-memory only
+  operations: readonly (OperationRequest & { key: string })[];
+  status?: HarnessStatus;
 }
 ```
 
-The chosen harness creates `pending` in its migrations. `parseInput` continues to validate only external harness inputs. Runtime events are validated and constructed by the runtime. Use precise discriminated unions for harness input types; a broad `EventBody` type cannot narrow payloads automatically. Never use the reserved `runtime.` event-type or `runtime:` event-ID prefixes for external inputs.
+Zero, one, or many outgoing operations are supported. They are independent, not sequential steps: array order does not imply execution/completion order. Return dependent work from a later completion handler instead.
 
-Delivery retries are invisible to the harness. A completion's admission survives a failing completion handler; the pending event retries under the ordinary transition rules. This API does not supply automatic tool cancellation, streaming, or generic harness state management.
+## Planning and applying
 
-## Migrations
+`HarnessReadContext` exposes frozen session identity/resolved config, single-SELECT `sql.exec`, and pure `operationId(key)`. Reads must use harness-owned committed state, not the changing runtime inbox/retry state. No writes, network calls, clocks, randomness, async hooks, or authoritative mutable module state in planning. Use the admitted input's sequence/time for deterministic identity/time when needed.
 
-`SqlMigration` contains a positive safe-integer version and nonempty SQL statements. `validateMigrations` rejects unordered/duplicate versions and empty statements; versions need not be consecutive, and an empty migration list is valid.
+Each operation needs a unique, stable key within its transition. The runtime derives its ID from session ID, harness ID/version, input sequence and key. `ctx.operationId(key)` returns that same ID for use in proposed harness state. Distinct keys create distinct operations even for identical requests; retrying the same input/key must reconstruct identical content.
 
-This validates definitions only. The runtime must separately track runtime/harness migration histories, apply each migration and its record atomically, and prevent edits to already-applied migrations. Put session-specific initial rows in `initialize`, not in schema migrations. Invalid migration definitions throw ordinary errors because they are implementation defects, not client validation failures.
+```ts
+handle(input, ctx) {
+  const operationId = ctx.operationId("first");
+  return {
+    changes: { operationId, text: input.event.payload.text },
+    operations: [{
+      key: "first", provider: "echo", type: "echo", version: "v1",
+      input: input.event.payload,
+    }],
+    status: "running",
+  };
+},
+apply(changes, ctx) {
+  ctx.sql.exec("INSERT INTO pending(operation_id, text) VALUES (?, ?)",
+    changes.operationId, changes.text).toArray();
+}
+```
 
-## Checks
+This sketch omits the completion branch. Runtime completion inputs have `{ operationId, provider, jobId, outcome }`; `jobId` is null only for a definitive submission rejection. Use a discriminated external input union and handle `runtime.operation.completed` separately. External producers cannot use `runtime.` event types or `runtime:` IDs.
 
-Run `pnpm --filter @managed-agents/harness-api check` or root `pnpm check`. Runtime tests cover migration validation. Compile-time tests verify real Cloudflare SQL compatibility, typed inputs, readonly config, and rejection of async initialization/handlers. Transaction and process-recovery behavior is tested separately in `packages/session-runtime` against Miniflare/workerd.
+The runtime validates the entire plan before submitting anything. Once every submission is accepted/completed/rejected, it atomically calls `apply`, stores small accepted-job receipts, queues immediate/rejected completions, releases the consumed input, and removes a consumed completion's pending receipt. No plan or outgoing request is persisted. Unknown submission results retain the input for replay with the same IDs. Already accepted external effects cannot be rolled back if a sibling rejects or local commit fails.
+
+`HarnessWriteContext` and `HarnessInitializationContext` expose identity/config and scoped SQL, but no operation dispatcher. `requestOperation` and `setStatus` have been removed. Changes are harness-defined data, not a generic SQL instruction language. `apply` must only write the already-planned decision, never re-decide it from new state.
+
+## Status and boundaries
+
+Optional `plan.status` is explicit display intent. Only after local commit does the host publish it to D1 best-effort. It is not persisted in runtime state or recovered by cron. Creation status/initial idle belong to agent-api. A failed/lost publication can leave D1 stale until a later explicit transition.
+
+Contexts expire on return/throw. Config and input are deeply frozen. The SELECT guard is deliberately restricted, not a SQL sandbox; trusted harness code must not access runtime tables, retain cursors, take transaction ownership, or schedule later work. The runtime cannot cancel external effects an incorrectly written hook already started.
+
+Fixed schema is bootstrapped transactionally once; later activations only check its presence. Any code/schema change affecting replay requires a new harness-version namespace. No migration history or compatibility path exists.
+
+`pnpm --filter @managed-agents/harness-api check` checks the contract, including rejection of async planning/apply hooks. Replay, rollback, batches and recovery are exercised in the runtime and concrete harness tests.

@@ -1,63 +1,44 @@
 import type { SqlStorage } from "@cloudflare/workers-types";
 import type { EventBody, InputEnvelope, SessionIdentity } from "@managed-agents/contracts";
-import { ContractException } from "@managed-agents/contracts";
-import type { HarnessContext, HarnessDefinition } from "@managed-agents/harness-api";
-
+import type { HarnessReadContext, HarnessDefinition, TransitionPlan } from "@managed-agents/harness-api";
 interface Config { label: string }
 type Input = { type: "fixture.record"; payload: { text: string } };
-type FixtureHarness = HarnessDefinition<Config, Input>;
-
+type FixtureHarness = HarnessDefinition<Config, Input, { text: string }>;
 const harness: FixtureHarness = {
-  identity: { id: "fixture", version: "v1" },
-  operations: [],
-  migrations: [{ version: 1, statements: ["CREATE TABLE counter (value INTEGER)"] }],
-  parseConfig(value) {
-    if (value === null || typeof value !== "object" || Array.isArray(value) || typeof value.label !== "string") {
-      throw new ContractException("INVALID_CONFIG", "label is required.");
-    }
-    return { label: value.label };
-  },
-  parseInput(event) {
-    const payload = event.payload;
-    if (event.type !== "fixture.record" || payload === null || typeof payload !== "object" || Array.isArray(payload) || typeof payload.text !== "string") {
-      throw new ContractException("INVALID_INPUT", "Expected fixture.record with text.");
-    }
-    return event as Input;
-  },
+  identity: { id: "fixture", version: "v1" }, operations: [],
+  schema: ["CREATE TABLE counter (text TEXT)"],
+  parseConfig: () => ({ label: "test" }), parseInput: event => event as Input,
   initialize(ctx) {
-    ctx.sql.exec("INSERT INTO counter (value) VALUES (?)", 0);
+    // @ts-expect-error Initialization cannot dispatch operations.
+    ctx.requestOperation({});
+    // @ts-expect-error The API, not initialization, publishes idle.
+    ctx.setStatus("idle");
   },
   handle(input, ctx) {
-    if (input.event.type === "runtime.operation.completed") {
-      const id: string = input.event.payload.operationId;
-      return;
-    }
-    const text: string = input.event.payload.text;
-    ctx.sql.exec("UPDATE counter SET value = value + 1");
+    const text = input.event.type === "runtime.operation.completed" ? input.event.payload.operationId : input.event.payload.text;
+    return { changes: { text }, operations: [], status: "running" };
   },
+  apply(changes, ctx) { ctx.sql.exec("INSERT INTO counter VALUES (?)", changes.text); },
 };
-
 declare const sql: SqlStorage;
 declare const session: SessionIdentity;
-const ctx: HarnessContext<Config> = {
-  session,
-  config: { label: "test" },
-  sql,
-  requestOperation() { return "operation-1"; },
-};
-
-// The actual Cloudflare SQL interface remains directly usable with typed cursors.
-const rows: { value: number }[] = ctx.sql.exec<{ value: number }>("SELECT value FROM counter").toArray();
-
-// @ts-expect-error Async handlers cannot satisfy the synchronous transition contract.
-const asyncHandler: FixtureHarness["handle"] = async () => {};
+const ctx: HarnessReadContext<Config> = { session, config: { label: "test" }, sql, operationId: key => key };
+const rows: { text: string }[] = ctx.sql.exec<{ text: string }>("SELECT text FROM counter").toArray();
+const id: string = ctx.operationId("llm");
+// @ts-expect-error Async handlers cannot satisfy the deterministic synchronous planning contract.
+const asyncHandler: FixtureHarness["handle"] = async () => ({ changes: { text: "" }, operations: [] });
+// @ts-expect-error Apply must remain a synchronous local transaction.
+const asyncApply: FixtureHarness["apply"] = async () => {};
 // @ts-expect-error Initialization cannot return a promise either.
 const asyncInitialization: FixtureHarness["initialize"] = async () => {};
-// @ts-expect-error Operation requests require an explicit version and JSON input.
-ctx.requestOperation({ provider: "echo", type: "echo" });
-const operationId: string = ctx.requestOperation({ provider: "echo", type: "echo", version: "v1", input: null });
-// @ts-expect-error State is persisted through the context, not returned as a new state object.
-const returningState: FixtureHarness["handle"] = () => ({ count: 1 });
+// @ts-expect-error Dispatch is returned as a plan, not performed through the context.
+ctx.requestOperation({ provider: "echo", type: "echo", version: "v1", input: null });
+// @ts-expect-error Status is returned in the transition, not a context side effect.
+ctx.setStatus("running");
+// @ts-expect-error Every outgoing operation needs a stable key.
+const invalid: TransitionPlan<null> = { changes: null, operations: [{ provider: "echo", type: "echo", version: "v1", input: null }] };
+// @ts-expect-error Creation lifecycle is controlled by the API, not the harness.
+const creation: TransitionPlan<null> = { changes: null, operations: [], status: "initializing" };
 // @ts-expect-error Config validation must also be synchronous.
 const asyncConfig: FixtureHarness["parseConfig"] = async () => ({ label: "test" });
 // @ts-expect-error Config properties are readonly during a transition.
