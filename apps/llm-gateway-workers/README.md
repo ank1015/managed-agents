@@ -1,156 +1,112 @@
-# LLM operation worker
+# Stateless LLM operation worker
 
-Implements `llm/generate/v1` against `../llm-providers/apps/llm-gateway`. This worker owns gateway authentication, submission/idempotency mapping, its public callback URL, polling, and durable completion delivery to session Durable Objects. The gateway owns accounts, provider execution, and retained jobs/results. `agent-api` is not in the callback path.
+Implements `llm/generate/v1` as a thin adapter to `../llm-providers/apps/llm-gateway`. The gateway owns durable jobs, idempotency/conflict detection, provider execution, retained results and webhook retries. This Worker owns gateway credentials, operation validation, host-generated routing context, signed callback verification and normalized delivery to the session DO.
 
-Use one dedicated gateway user per environment. Its accounts are the accounts available to these harnesses. Store its user API key here, not gateway-admin credentials or individual provider keys. Account IDs and model IDs are operation inputs; secrets and destinations are deployment-owned.
+**Deployed on 2026-09-20.** Its D1 binding, Queue producer/consumer and recovery cron are absent; old resources remain intact and unbound. Bash and execution callbacks are stateless too. See the [deployment guide](../../DEPLOYMENT.md) and [breaking rollout requirements](#deployment-and-breaking-rollout).
 
-## Flow and ownership
+Schema-version-2 callbacks carry their signed terminal result directly. The callback path makes no gateway GET. Live bindings and source/configurations target `minimal-bash/v7`. V6 work was drained before switching; its code/data remains intact. Retained older code/data is unchanged. See the [v7 rollout](../../DEPLOYMENT.md).
 
-```text
-session outbox -> private submit RPC -> D1 reservation -> gateway POST /v1/jobs
-                                     <- persist job ID <- durable acceptance
-session deletes operation input <- accepted { jobId }
+## Submission
 
-gateway -> signed webhook -> D1 event -> inline fetch of terminal gateway result
-                                              -> session.acceptCompletion
-                                              <- durable receipt -> mark delivered
-```
-
-The worker accepts an operation only after BOTH the gateway job and its D1 routing record are durable. A lost response or failed D1 mapping write causes the session to retry the same submission. The gateway key is `ma-v1:` plus SHA-256 of the runtime's submission ID; normalized input is hashed separately to detect conflicting retries. Identical retries recover the original gateway job ID, which is also the worker's `jobId`.
-
-Before acceptance the session still owns submission retries. After acceptance this worker owns completion delivery, even if the session makes no more calls. The authenticated terminal callback continues directly after D1 admission; normal submissions do not enqueue an eager pending poll. Queue retries and a one-minute scheduled sweep recover failures, lost callbacks, expired leases and interrupted invocations. Pending recovery checks only metadata; terminal jobs download the response. The session's normal status reconciliation remains an independent recovery path through this worker.
-
-Callback admission checks HMAC, timestamp freshness (five minutes), and header/body event identity before persisting the event. It returns 204 only after D1 persistence and uses `waitUntil` for immediate processing; a failed fast path is queued and D1 remains recoverable even if that enqueue fails. An early callback recovers the reservation using the gateway job's idempotency key. Duplicate events, concurrent delivery, and a lost session receipt are safe. D1 marks delivery complete only after the session returns the matching durable receipt, not merely after making the RPC call. Processing by the harness can occur later.
-
-Delivery is at least once; the session deduplicates the completion. This does not promise exactly-once upstream model execution. Missing accepted jobs, configuration/authentication failures, and uncertain submissions remain retryable errors, not invented terminal failures. No cancellation request API is implemented; gateway cancellation is translated if it occurs.
-
-## Operation contract
-
-Shared types and validators live in `packages/contracts/src/llm.ts`. A harness declares `LLM_OPERATION` in its `operations` allowlist, then requests:
-
-```ts
-ctx.requestOperation({
-  provider: "llm", type: "generate", version: "v1",
-  input: {
-    accountId: "<gateway-user-owned-account-uuid>",
-    modelId: "<gateway-catalog-model-id>",
-    messages: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
-    // Optional: instructions, tools, providerOptions. previousJobId defaults to null.
-  },
-});
-```
-
-Fresh input is `{ accountId, modelId, messages, instructions?, tools?, providerOptions?, previousJobId?: null }`. Continuation input is **only** `{ previousJobId, messages }`: it inherits the successful parent's account/model/settings and appends messages to its retained history. Expired parent requests cannot continue. The upstream gateway currently defaults request retention to seven days and reconstructs a complete snapshot for every continuation; this worker does not change that upstream storage policy.
-
-Message roles are `user`, `system`, `assistant`, `tool_result`, and `custom`. Assistant content preserves opaque provider-native items, including replay/reasoning/tool-call data. Function tools and custom Lark-grammar tools are supported. The worker rejects callback URLs, credentials, caller-supplied idempotency keys, and other unknown top-level input fields.
-
-Successful runtime outcome:
+The private `LlmGateway.submit` RPC accepts:
 
 ```ts
 {
-  status: "succeeded",
-  result: {
-    gatewayJobId: string,
-    response: {
-      id: string, modelId: string, resolvedModelId?: string,
-      message: LlmAssistantMessage,
-      stopReason: "stop" | "length" | "tool_use" | "refusal" | "content_filter" | "pause_turn",
-      usage?: LlmResponse["usage"], durationMs: number, timestamp: number
-    }
+  destination: { routeKey, sessionId },
+  submission: {
+    operationId, submissionId,
+    request: { provider: "llm", type: "generate", version: "v1", input }
   }
 }
 ```
 
-The harness receives this through `runtime.operation.completed`, not a public output endpoint. Gateway failures become `{ status: "failed", origin: "execution", error: { code, message, details: { gatewayJobId } } }`; cancellation becomes `{ status: "cancelled" }`. Definitive submission rejection returns the provider contract's `rejected`; the session constructs its submission-origin failure.
-
-Operation inputs and complete outcomes are limited separately to **8 MiB of UTF-8 JSON**, enforced in the shared contracts. Session persistence uses transactional chunked SQLite rows for large payloads, including outcomes and completion events. Oversized gateway results produce `LLM_RESULT_TOO_LARGE` with the gateway job ID; they are not truncated. The original stays in the gateway. Detail reads include the retained request too, so their transport cap is 32 MiB (16 MiB upstream request + 8 MiB result + envelope headroom). This worker still stores only routing/hash/retry metadata in D1; no full prompt/result copies are added there. R2 references are not implemented. Deploy the updated session host/runtime before delivering larger results.
-
-## Private RPC and host integration
-
-The named `LlmGateway` WorkerEntrypoint exposes two methods taking and returning JSON strings:
-
-| Method | Input | Output |
-|---|---|---|
-| `submit` | `{ destination: { routeKey, sessionId }, submission: ProviderSubmission }` | `ProviderSubmitResult` |
-| `get` | `ProviderStatusQuery` | `ProviderStatusResult` |
-
-Bind a harness host to it:
-
-```jsonc
-"services": [{ "binding": "LLM", "service": "managed-agents-llm-gateway", "entrypoint": "LlmGateway" }]
-```
-
-Type `env.LLM` as `LlmWorkerBinding`. Supply this adapter to `SessionDriver` under the `llm` key (imports below are from `@managed-agents/contracts`):
+It validates the envelope and LLM input, checks the configured return route, and calls authenticated `POST /v1/jobs` with:
 
 ```ts
-llm: {
-  submit: async submission => parseProviderSubmitResult(JSON.parse(await env.LLM.submit(JSON.stringify({
-    destination: { routeKey: "my-harness-v1", sessionId: this.driver.getSession().identity.sessionId },
-    submission,
-  })))),
-  get: async query => parseProviderStatusResult(JSON.parse(await env.LLM.get(JSON.stringify(query)))),
+{
+  ...normalizedInput,
+  idempotencyKey: "ma-v1:" + sha256(submissionId),
+  clientContext: { routeKey, sessionId, operationId, submissionId }
 }
 ```
 
-Service RPC is a trusted internal boundary, not a public HTTP API. The driver bounds calls even though RPC itself cannot be aborted. The worker independently bounds gateway requests and completion delivery. The host—not the harness—chooses the destination. Do not expose these bindings directly to end users.
+The destination comes from the trusted host adapter, not model/harness input. `clientContext`, callback URLs, credentials and caller-supplied idempotency keys are rejected as LLM input fields. A fresh request defaults `previousJobId` to null, `tools` to `[]` and `providerOptions` to `{}`. Full native assistant messages are preserved. The continuation form is `{ previousJobId, messages }`; it receives this submission's own context, never the parent's context.
 
-In this worker's Wrangler configuration, map each allowed route key to the corresponding existing SQLite namespace:
+The Worker returns `{ result: { status: "accepted", jobId } }` after gateway acceptance, without waiting for generation. If POST returns an already-terminal job, it fetches/validates the result and returns `{ result: { status: "completed", jobId, outcome } }`. This handles replay even when an earlier callback was already acknowledged or its retries exhausted. A failed terminal detail read remains an error, never a submission rejection.
 
-```jsonc
-"vars": { "GATEWAY_URL": "https://gateway.example.com", "SESSION_ROUTES": "{\"my-harness-v1\":\"MY_SESSIONS\"}" },
-"durable_objects": { "bindings": [{
-  "name": "MY_SESSIONS", "class_name": "MySession", "script_name": "my-harness-host"
-}] }
+Definitive pre-acceptance gateway errors return `{ result: { status: "rejected", error } }`. Authentication failures, idempotency conflicts, malformed responses, timeouts and uncertain acceptance throw: the runtime retains its source and retries the same deterministic identity. Every submission retry POSTs to the gateway; the gateway returns the existing job or rejects changed input/context. There is no local accepted/rejected cache or full-request fingerprint.
+
+Normal submission has **zero D1 calls, zero Queue messages and one gateway POST**. Gateway request/result storage policies are unchanged. The private diagnostic `get`, metadata polling, local operation/event tables, migrations, leases, retry counters and recovery cron are removed.
+
+## Callback and acknowledgement
+
+The configured gateway user's common callback remains `POST /webhooks/llm-gateway`. The signed body must be:
+
+```ts
+{
+  schemaVersion: 2,
+  eventId, jobId, completedAt,
+  type: "job.succeeded" | "job.failed" | "job.cancelled",
+  clientContext: { routeKey, sessionId, operationId, submissionId },
+  response: AssistantResponse | null,
+  error: { code: string, message: string, /* gateway error fields */ } | null
+}
 ```
 
-The session host must implement `sessionRequest(JSON.stringify({ action: "acceptCompletion", value: OperationCompletion }))`, authenticate by restricting access to trusted bindings, call `SessionDriver.acceptCompletion`, and return JSON `{ ok: true, value: CompletionReceipt }` only after admission commits. The existing internal session protocol already has this shape. No new Durable Object class or namespace is created by this worker.
+1. Verify raw-body HMAC, five-minute timestamp freshness, and matching header/body event ID. Signing-secret rotation is supported.
+2. Validate the exact context shape and select a configured namespace using the allowlisted route key. Never follow an arbitrary URL from context.
+3. Validate the inline terminal result and normalize it into the shared operation outcome. Success requires `response` and null `error`; failure requires null `response` and an error; cancellation requires both null. No gateway request is made, including on duplicate delivery. The signature authenticates the routing context, job ID and result; DO admission still verifies operation/job correlation and outcome hashes.
+4. Call `sessionRequest({ action: "acceptCompletion", value: { provider: "llm", operationId, submissionId, jobId, outcome } })` on the named session DO.
+5. Return `204` **only after** a matching durable admission receipt. Harness processing may happen later.
 
-The [minimal-bash host](../harness-minimal-bash/README.md) provides the coding loop and private adapter. This worker's config maps `minimal-bash-v1` to its `MINIMAL_BASH_SESSIONS` namespace. Establish that host namespace before activating the binding; see its first-deployment guidance. `test/fixture.ts` remains a test-only host and must never be deployed.
+There is no D1 access, Queue fallback, `waitUntil` forwarding or local delivery state. Admission failures and unavailable route bindings return `503` so the gateway retries. A lost acknowledgement or concurrent duplicate is safe because the DO deduplicates by operation/completion content. Early callbacks are admitted behind their still-unconsumed initiating input, using the runtime's existing reconstructed-plan checks.
 
-## Storage
+Each submission and each entire callback has one **eight-second deadline**. Callback timing includes body reading, verification, result validation and DO admission, below the gateway's ten-second callback timeout. Gateway HTTP calls also have a seven-second maximum within that shared budget. Deadline expiry aborts fetch/body consumption; RPC cannot be aborted, so late admission is permitted and deduplicated on redelivery. Exhausted budget never authorizes returning success before admission.
 
-`migrations/0001_initial.sql` is the complete initial D1 schema:
+Invalid signatures/freshness return `401`; malformed or missing context returns `400`. Old context-free or notification-only callbacks are deliberately unsupported. Terminal submission replay still fetches job detail and verifies its idempotency key, context and status. Missing accepted jobs and inconsistent results are not permission to create replacement executions.
 
-- `llm_operations`: submission/operation IDs, session destination, normalized request hash, gateway key/job ID, state, definitive rejection if any, delivery timestamp, retry deadline, attempt count, and fenced lease/error fields.
-- `llm_webhook_events`: event identity, gateway job ID/type/completion time, admission/processing timestamps, and retry/lease/error fields.
+## Results and limits
 
-Neither table stores operation inputs or model results. Queue messages contain only `{ kind: "operation" | "event", id }`. D1 is the recovery source of truth; Queue is a retry/recovery mechanism rather than the normal completion path. The consumer uses batch size 1 and zero batch timeout. The gateway remains authoritative for results and idempotency, so preserve its user and job records throughout the recovery horizon. Changing the gateway user/origin with outstanding jobs is not a supported migration. Key rotation for the SAME user is fine.
+Success is `{ status: "succeeded", result: { gatewayJobId, response } }`, preserving the full gateway assistant response. Execution errors become `{ status: "failed", origin: "execution", error: { code, message, details: { gatewayJobId } } }`; cancellation becomes `{ status: "cancelled" }`.
 
-Mappings and webhook receipts are retained without automatic pruning in v1. Growth is metadata per operation, not repeated prompts. The scheduled sweep publishes at most 100 due work IDs per run; Queue retry delays back off to five minutes. Monitor undelivered rows, oldest due time, `last_error`, and unprocessed events; sustained backlog requires increasing recovery throughput. Route removal/deleting sessions requires a future explicit abandonment policy rather than silently dropping results.
+Inputs allow 8 MiB of UTF-8 JSON; complete outcomes allow 1,900,000 bytes. Oversized results become a small `LLM_RESULT_TOO_LARGE` terminal failure, delivered normally so the harness can fail the run. The original remains at the gateway. Job-detail reads keep their 32 MiB transport cap because the endpoint also returns retained request history; exceeding a successful response's transport cap likewise yields the size failure. Oversized non-success HTTP error pages remain retryable transport errors, not model failures. Callback bodies now use the same 32 MiB transport cap, rather than the old 16 KiB notification cap. Within it, oversized valid results become `LLM_RESULT_TOO_LARGE`; a callback body above the cap receives `413` before authentication/JSON parsing, cannot be durably admitted, and needs operator attention. There is deliberately no callback-path GET fallback. No R2 references are implemented.
 
-## Deployment
+## Recovery ownership and limitations
 
-No cloud resources are provisioned by the tests or build. Before deploying:
+Before local commit, the runtime owns replay of uncertain submission under the same identity. After acceptance, the **gateway alone owns callback retries**; this Worker has no sweep to recover a missing/exhausted callback. As inspected, gateway delivery has eight attempts, a 24-hour retry-window cap and a ten-second HTTP timeout. Eight attempts can exhaust before 24 hours. A session can remain waiting after exhaustion; use the gateway's failed-delivery visibility and manual redelivery. Preserve gateway job/result records and credentials for the recovery horizon.
 
-1. Create the dedicated gateway user and add its provider accounts. The gateway API and its execution worker must both run.
-2. Provision D1 and Queue; run these from this app directory, then replace `database_id` in `wrangler.jsonc`:
+This is at-least-once delivery, not exactly-once provider execution. The gateway marks callback delivery complete only after this Worker has acknowledged durable DO admission. Alerting/automatic replay of exhausted gateway deliveries is outside this adapter. Callback verification requires the owning gateway user's signing secret; normal callback delivery no longer uses the gateway API key. Submission and terminal replay still require that user's API key.
 
-   ```sh
-   pnpm exec wrangler d1 create managed-agents-llm-operations
-   pnpm exec wrangler queues create managed-agents-llm-completions
-   pnpm exec wrangler d1 migrations apply LLM_DB --remote
-   ```
+## Bindings and secrets
 
-3. Set `GATEWAY_URL`, session namespace bindings/`SESSION_ROUTES`, and a public HTTPS custom domain/route. `workers_dev` and preview URLs are disabled. On the gateway, allow this callback origin in `WEBHOOK_ALLOWED_ORIGINS`. Configure the dedicated user's `callbackUrl` (admin user creation/update or `PATCH /v1/me`) to `https://<worker-domain>/webhooks/llm-gateway`.
-4. Install the dedicated user's secrets (the webhook secret is returned when creating the user or rotating its webhook secret):
+- `GATEWAY_URL`: HTTPS gateway origin.
+- `GATEWAY_API_KEY`: dedicated gateway user's API key.
+- `GATEWAY_WEBHOOK_SECRET`: that user's signing secret.
+- Optional `GATEWAY_PREVIOUS_WEBHOOK_SECRET` during rotation.
+- `SESSION_ROUTES`: map allowed route keys to existing DO namespace bindings.
+- Namespace bindings: `MINIMAL_BASH_SESSIONS` for `minimal-bash-v7` in source/configurations and live deployment.
 
-   ```sh
-   pnpm exec wrangler secret put GATEWAY_API_KEY
-   pnpm exec wrangler secret put GATEWAY_WEBHOOK_SECRET
-   pnpm exec wrangler deploy
-   ```
+There is no `LLM_DB`, Queue binding or scheduled handler. The host keeps its existing private `LlmGateway` binding and `parseProviderSubmitReply` adapter. No gateway credentials are added to the host. Public routes are only `GET /health` and the signed callback; health is liveness, not readiness. Workers.dev and preview URLs remain disabled.
 
-5. Configure each LLM-capable session host's named service binding and adapter above. Exercise one real job and confirm `delivered_at` and the session's durable result before routing production workloads.
+## Deployment and breaking rollout
 
-For webhook rotation, retain the former secret temporarily as optional `GATEWAY_PREVIOUS_WEBHOOK_SECRET`, then install the new current secret; remove the former after in-flight old-signed deliveries have drained. Callback URLs are captured when gateway jobs become terminal, so keep an old URL reachable while its events drain if moving domains.
+The deployed inline-result/v6 release requires signed `schemaVersion: 2` events including `response` and `error` on initial delivery and redelivery. Live gateway delivery was verified. The previous notification-only receiver rejects v2. When repeating this rollout elsewhere, pause new traffic and resolve/drain old work before switching namespaces. If v5 callbacks remain, first deploy the inline receiver with the existing v5 binding (a staged config), and redeliver/verify them; do not redirect old callbacks to v6. Then follow the host's [fresh-namespace rollout](../harness-minimal-bash/README.md#setup-and-rollout). There are no new databases, Queues or schema migrations. Keep all old namespace data/code intact.
 
-Public routes are only `GET /health` and `POST /webhooks/llm-gateway`. The callback is shared across sessions for this gateway user; D1 maps each job to its destination. Liveness health does not assert valid deployment credentials/bindings.
+The following records the **previous stateful → stateless rollout**; it is not a reason to recreate or re-drain already detached LLM resources:
+
+The gateway must first persist and echo per-job `clientContext` for fresh/continuation requests, expose it in job detail, cover it in webhook signatures and include it in idempotency conflicts.
+
+1. Pause new input/resume traffic across all affected harnesses and let existing processing/jobs finish using the old Worker. Drain the old `llm_operations` and `llm_webhook_events` work, outstanding gateway deliveries, and old LLM Queue work. Verify there are no uncertain/replaying submissions, not just no currently running provider jobs.
+2. Detach the old `managed-agents-llm-completions` consumer after draining. Deploy only this Worker with its existing secrets, domain and namespace bindings. Verify its Queue producer/consumer bindings are gone and its cron list is empty; removing code alone is not proof that cloud triggers were removed.
+3. Do **not** drop/delete the old `managed-agents-llm-operations` database or Queue as part of this code change. They can be retained unbound for separately approved cleanup. The removed local migration is not a remote DROP operation.
+4. Restore traffic and verify a real LLM/bash/LLM run, gateway callback `delivered` status, DO transcript/status and duplicate delivery. There is no Worker `delivered_at` to query anymore. Existing drained v5 sessions can continue; no API/harness schema update is necessary.
+
+Do not switch a live context-free operation to this receiver: it cannot infer routing without the old mapping. Do not reuse an in-flight pre-change submission with added context under the same idempotency key: the gateway correctly reports a conflict. Rolling back to the old stateful receiver also requires draining new-context jobs first. Neither direction supports mixed in-flight protocols.
+
+First-time setup only requires gateway URL/user credentials, callback origin allowlist/user callback configuration and existing session namespace bindings. No LLM D1/Queue provisioning or migrations. Keep the same gateway user/origin for outstanding jobs; credential rotation for that same user is supported.
 
 ## Checks
 
-```sh
-pnpm --filter @managed-agents/llm-gateway-workers check
-pnpm check
-```
+Run `pnpm --filter @managed-agents/llm-gateway-workers check` or `pnpm check`. Checks never deploy or call real gateways.
 
-Tests use real workerd, named service RPC, D1, Queues, and SQLite session objects with a deterministic fake gateway matching the inspected upstream contracts. They cover success/native-response preservation, early/duplicate callbacks, lost acceptance/receipt, D1 failures, transient delivery failures, HMAC/freshness/rotation, immutable retries, terminal outcomes and size limits, missing accepted jobs, expired leases, and full process restart/scheduled recovery. No live provider calls occur. Fixtures are excluded from the production bundle.
+Tests run production RPC, HTTP handlers and SQLite session runtime in workerd with **no LLM D1 or Queue bindings**. They cover early/duplicate/concurrent callbacks, lost submission responses, terminal replay, lost/invalid admission receipts, signature/context tampering, context conflicts, continuation routing, restart with gateway redelivery, fetch/correlation failures, oversized results/error pages and a shared callback deadline. Full-stack minimal-bash tests also use the real stateless LLM Worker with fake gateways. The stateless bash/router release likewise tests without adapter D1/Queue bindings.
