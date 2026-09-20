@@ -7,7 +7,7 @@ export * from "./execution-gateway.ts";
 export type { ContractError, ContractErrorCode } from "./errors.ts";
 export { parseEventBody, parseSubmitInputRequest } from "./input.ts";
 export type { EventBody, EventId, InputEnvelope, InputReceipt, SubmitInputRequest } from "./input.ts";
-export { jsonEquals, parseJsonValue } from "./json.ts";
+export { jsonEquals, parseJsonValue, MAX_INLINE_ROW_BYTES, utf8Bytes } from "./json.ts";
 export type { JsonValue } from "./json.ts";
 export { parseInitializeSessionRequest } from "./session.ts";
 export type {
