@@ -1,9 +1,7 @@
+import type { LogSettings } from "@managed-agents/diagnostics";
 import type { GatewayEventReceiverBinding } from "@managed-agents/contracts";
 
-export type Work = { eventId: string };
-export interface Env {
-  CALLBACK_DB: D1Database;
-  DELIVERIES: Queue<Work>;
+export interface Env extends LogSettings {
   EXECUTION_GATEWAY_WEBHOOK_SECRET: string;
   EXECUTION_GATEWAY_PREVIOUS_WEBHOOK_SECRET?: string;
   CALLBACK_ROUTES: string;
