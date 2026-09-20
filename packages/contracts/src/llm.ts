@@ -29,10 +29,9 @@ export type LlmInput =
   | { previousJobId: string; messages: LlmMessage[] };
 export interface SessionDestination { routeKey: string; sessionId: string }
 export interface LlmSubmission { destination: SessionDestination; submission: ProviderSubmission }
-/** JSON strings keep recursive JSON types out of Cloudflare RPC's mapped types. */
+/** Structured RPC; unknown avoids recursively mapping JSON unions through Cloudflare RPC types. */
 export interface LlmWorkerBinding {
-  submit(serialized: string): Promise<string>;
-  get(serialized: string): Promise<string>;
+  submit(value: unknown): Promise<unknown>;
 }
 
 function invalid(message: string): never { throw new ContractException("INVALID_REQUEST", message); }

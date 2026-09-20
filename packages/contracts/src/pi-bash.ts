@@ -27,7 +27,7 @@ export const PI_BASH_TOOL = Object.freeze({
 export type BashToolInput = { command: string; timeout?: number };
 export type BashInput = BashToolInput & { machineId: string; cwd: string };
 export interface BashSubmission { destination: SessionDestination; submission: ProviderSubmission }
-export interface BashWorkerBinding { submit(serialized: string): Promise<string>; get(serialized: string): Promise<string> }
+export interface BashWorkerBinding { submit(value: unknown): Promise<unknown> }
 
 export function parseBashToolInput(value: unknown): BashToolInput {
   const r = record(parseJsonValue(value), ["command", "timeout"], "bash arguments");
