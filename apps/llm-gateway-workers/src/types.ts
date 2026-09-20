@@ -1,13 +1,12 @@
-import type { SessionDestination } from "@managed-agents/contracts";
+import type { LogSettings } from "@managed-agents/diagnostics";
+import type { SessionDestination, SessionReply } from "@managed-agents/contracts";
+import type { DurableObjectId } from "@cloudflare/workers-types";
 
-export type Work = { kind: "operation" | "event"; id: string };
 export interface SessionNamespace {
   idFromName(name: string): DurableObjectId;
-  get(id: DurableObjectId): { sessionRequest(serialized: string): Promise<string> };
+  get(id: DurableObjectId): { sessionRequest(command: unknown): Promise<SessionReply<unknown>> };
 }
-export interface Env {
-  LLM_DB: D1Database;
-  COMPLETIONS: Queue<Work>;
+export interface Env extends LogSettings {
   GATEWAY_URL: string;
   GATEWAY_API_KEY: string;
   GATEWAY_WEBHOOK_SECRET: string;
