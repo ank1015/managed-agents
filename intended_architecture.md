@@ -1,11 +1,15 @@
 # Managed Agents: Intended Architecture
 
 Status: implementation design, not a description of completed functionality.  
-Last updated: 2026-09-18.
+Last updated: 2026-09-20.
 
-**Implemented so far — durable platform, operation workers and minimal-bash coding harness:** contracts, harness API, synchronous runtime and async driver, authenticated `agent-api`, LLM and Pi bash workers, and the shared execution callback router. The [minimal-bash harness](packages/harness-minimal-bash/README.md) implements the full OpenAI → serial bash → OpenAI loop, native transcript replay, batched steering and graceful turn-boundary cancellation. Its [host](apps/harness-minimal-bash/README.md) supplies private bindings, transcript reads and revision-guarded D1 status projection with scheduled repair. The operation workers own dedicated-user gateway calls, D1 routing/retry metadata, Queue delivery and recovery. Workerd tests exercise the real API, hosts, workers, callback router, SQLite and D1 with contract-compatible fake gateways; no live gateway end-to-end test or deployment is performed by these checks. Compaction, hard cancellation, additional tools and streaming remain future work. Exact current contracts and limits are in the linked READMEs; later generic examples in this document remain architectural sketches.
+The deployed version is **`minimal-bash/v7`**. The implemented stack includes contracts, harness API, session runtime/driver, authenticated agent API, the minimal-bash harness, stateless LLM/bash operation workers and a shared execution callback router. See [deployment and configuration](DEPLOYMENT.md) and the [production benchmark](V7_PRODUCTION_BENCHMARK.md).
 
-For minimal-bash, a **model turn** is one LLM response plus all tool calls in that response; a **run** is the sequence of model turns answering a user request; a **session** is the persistent conversation containing many runs. All steering is included together at the next model-turn boundary. Lifecycle custom messages are retained in the transcript but never sent to the LLM. Follow-ups belong to the consuming app.
+The runtime uses read-only transition plans with multiple outgoing operations, idempotent submission before atomic local commit, and small pending acceptance receipts. It does not persist outgoing requests or chunk JSON. V7 reduces SQLite row/index writes: ordinary integer primary keys for message/inbox sequences, no session sequence-counter write, `WITHOUT ROWID` pending receipts, and full-history context scans with in-memory filtering.
+
+Both gateway callback paths use signed inline results and echoed host-owned routing context. Adapters have no D1/Queue/cron and acknowledge only after durable DO admission; gateway retries own accepted-job delivery. The harness publishes best-effort D1 display status without a publication ledger or status cron. Compaction, hard cancellation, additional tools and streaming remain future work. Exact current contracts are in the component READMEs; generic examples below remain architectural sketches.
+
+For minimal-bash, a **model turn** is one LLM response plus all tool calls in that response; a **run** is the sequence of model turns answering a user request; a **session** is the persistent conversation containing many runs. All steering is included together at the next model-turn boundary. No lifecycle custom messages are generated; run state lives in the harness state row. Follow-ups belong to the consuming app.
 
 This document consolidates the requirements and decisions from the task **“Plan system design requirements”** and the subsequent discussion in **“Assess Rust to WASM stack”**. It describes the system we intend to build in this repository, why its boundaries exist, and how to implement its first complete execution path.
 
@@ -71,7 +75,7 @@ OpenAI's Agents API and Anthropic's managed agents were product inspirations in 
 | Session configuration | Fixed after initialization; schemas can differ by harness |
 | Session persistence | The object's private SQLite database is authoritative |
 | Event handling | Exactly one logical input per handler call; process inputs sequentially |
-| Handler responsibilities | Local computation, local state changes, and recording requested operations |
+| Handler responsibilities | Read-only deterministic plan; separate synchronous apply after submission receipts |
 | Runtime placement | Shared library code running inside every session object |
 | External work | Harnesses declare supported operations; host adapters dispatch only to implemented operation workers |
 | Tool behavior | Tool services own their execution details and any tool-specific state |
@@ -87,7 +91,7 @@ OpenAI's Agents API and Anthropic's managed agents were product inspirations in 
 - Session-local input admission, ordering, and deduplication.
 - The harness integration contract.
 - Harness state and history as designed by each harness.
-- Atomic application of one input and creation of outgoing work.
+- Replay-based outgoing submission and atomic local application of one input.
 - Operation submission, correlation, completion admission, and recovery.
 - Session status and read interfaces.
 - Worker deployments for the API, harnesses, and initial tool adapters.
@@ -136,9 +140,9 @@ flowchart LR
     Session -. Committed metadata updates .-> Index[(Session listing index)]
 ```
 
-The diagram shows logical roles, not a finalized count of databases. The routing directory and listing index may share a physical store, but they have different correctness requirements. Step 3 uses D1 for the authoritative directory. The listing projection is not implemented and its storage remains open.
+The diagram shows logical roles, not a finalized count of databases. D1 currently provides both authoritative routing and the best-effort display-status listing. The R2 link is future work, not a provisioned runtime dependency.
 
-Private host adapters submit to operation workers and route their completions to sessions. Operation-worker storage, internal queues and execution recovery are independent of the session runtime. The LLM and Pi-style bash workers implement this handoff contract; additional workers remain future work. Queues do not replace the object's authoritative inbox or pre-acceptance outbox.
+Private host adapters submit to operation workers and route their completions to sessions. Operation-worker storage, internal queues and execution recovery are independent of the session runtime. The LLM and Pi-style bash workers implement this handoff contract; additional workers remain future work. The durable session inbox is the replay source; no pre-acceptance outbox exists.
 
 ## 5. Vocabulary and ownership
 
@@ -150,14 +154,14 @@ Private host adapters submit to operation workers and route their completions to
 | Session | One durable agent identity, configuration, state, and conversation |
 | Run/turn | A unit of work within a session; exact external identifiers remain open |
 | Inbox event | A durably admitted input waiting to be consumed by the harness |
-| Harness transition | One handler invocation and its local transaction |
-| Outbox action | A committed instruction awaiting delivery to an external component |
-| Session operation | The session's record of requested work, from intention through outcome |
+| Harness transition | Read-only plan, resolved submissions, and one atomic local commit |
+| Planned operation | An in-memory request with a stable replay key/identity |
+| Pending operation receipt | Small accepted-job correlation retained until completion handling commits |
 | Provider job | Work accepted and tracked by a gateway or tool service |
 | Tool instance | A longer-lived resource, such as a code-mode environment |
 | Tool invocation | A particular request against a tool definition or instance |
 
-An outbox action and an operation are not interchangeable. Delivery may finish quickly while execution remains pending for a long time.
+Submission acceptance is distinct from execution completion. Accepted execution may remain pending for a long time; the worker owns that interval and result delivery.
 
 ## 6. Repository structure
 
@@ -222,14 +226,14 @@ managed-agents/
 | App | Responsibilities |
 |---|---|
 | `agent-api` | Public API, authentication, routing, session creation, listing, and input admission endpoints |
-| `harness-minimal-bash` | Coding session Durable Object, LLM/bash service adapters, transcript reads and D1 status projection/repair |
-| `llm-gateway-workers` | Dedicated-user gateway submission, D1 routing/idempotency/retry metadata, signed webhook admission, Queue/scheduled recovery, private completion delivery to session namespaces |
-| `tool-pi-bash-workers` | Dedicated-user execution.run submission with clientContext, Pi-style output formatting, private callback admission into its operation record, Queue/scheduled recovery and session completion delivery |
-| `execution-gateway-callback-workers` | Shared execution-user webhook, signature verification, D1 event receipts, allowlisted clientContext routing and durable private delivery to tool workers; no job submission or session access |
+| `harness-minimal-bash` | Coding session Durable Object, LLM/bash adapters, transcript reads and explicit D1 status publication |
+| `llm-gateway-workers` | Stateless dedicated-user gateway submission with host-owned clientContext, signed inline callback verification and synchronous durable session admission; result retrieval only for terminal submission replay; gateway owns idempotency and delivery retries |
+| `tool-pi-bash-workers` | Stateless dedicated-user execution.run submission with full clientContext, Pi-style inline-result formatting and synchronous durable session admission |
+| `execution-gateway-callback-workers` | Stateless shared execution-user v3 webhook, signature verification, allowlisted structured forwarding to tools and acknowledgement after DO admission; no job submission or session access |
 | `harness-coding-v1` | Export the concrete Durable Object class, compose runtime and harness, and configure the deployment's bindings and namespace |
 | `tools` | Host simple external tool adapters, validate service requests, route by tool/version, and expose the operation contract |
 
-Public session routes live in agent-api. LLM callbacks belong to the LLM operation worker. Execution-gateway callbacks belong to the shared callback worker, which authenticates/persists events and routes by the gateway's echoed worker-generated `clientContext` to callback-only tool bindings. Tool workers keep their own databases and deliver normalized completions through private session admission. There is no shared tool database or separate job-to-tool mapping table. Agent-api does not host operation callbacks.
+Public session routes live in agent-api. LLM callbacks belong to the LLM operation worker. Execution-gateway callbacks belong to the shared callback worker, which authenticates inline events and routes by the gateway's echoed worker-generated `clientContext` to callback-only tool bindings. Both implemented tool/provider adapters are stateless and deliver normalized completions through private session admission; durability and retries live in their gateways. There is no shared tool database or separate job-to-tool mapping table. Agent-api does not host operation callbacks.
 
 An app owns its Wrangler configuration, generated environment types, secrets/bindings, deployment scripts, and environment settings. A Durable Object class is exported from its hosting app; every object instance is not a separate deployment.
 
@@ -239,9 +243,9 @@ An app owns its Wrangler configuration, generated environment types, secrets/bin
 |---|---|
 | `contracts` | Shared wire schemas, event envelopes, IDs, operation requests, status/results, and callback envelopes |
 | `harness-api` | In-process harness interface, capabilities of the handler context, and integration types |
-| `session-runtime` | Common runtime state, migrations, inbox, transactions, operations, outbox dispatch, completion admission, deadlines, and recovery |
+| `session-runtime` | Common runtime state, fixed-schema bootstrap, inbox, transactions, read-only planning, replay submission, acceptance receipts, completion admission, and inbox recovery |
 | `harness-minimal-bash` | OpenAI config, full native history, pending steering, serial bash cursor, run lifecycle and turn-boundary cancellation |
-| `harness-coding-v1` | Harness config validation, schema/migrations, initialization, context building, event handling, and behavior policy |
+| `harness-coding-v1` | Illustrative harness config validation, fixed schema, initialization, context building, event handling, and behavior policy |
 | `tool-apply-patch` | Patch-tool validation, conversion into execution-gateway requests, job-handle translation, and result translation |
 | `gateway-clients` | Clients and transport mapping for the existing LLM and execution gateways |
 
@@ -252,14 +256,15 @@ Keep tightly related runtime modules together:
 ```text
 packages/session-runtime/src/
 ├── runtime.ts
-├── inbox.ts
-├── outbox.ts
-├── operations.ts
-├── dispatcher.ts
-├── alarms.ts
+├── driver.ts
+├── context.ts
+├── operation-identity.ts
+├── bootstrap.ts
 └── storage/
-    ├── migrations/
-    └── queries.ts
+    ├── inbox.ts
+    ├── operations.ts
+    ├── progress.ts
+    └── schema.ts
 ```
 
 The inbox and dispatcher do not need separate packages. Initially the runtime can use Cloudflare APIs directly; a generic storage adapter package is not required.
@@ -298,7 +303,7 @@ Namespaces must exist through deployment before sessions are created in them. Ad
 
 The public session ID resolves to a stable harness/version/object route. Do not allow a caller's submitted harness name or object ID to bypass the pinned route.
 
-**Implemented:** opaque `ses_<UUID>` IDs and an authoritative D1 directory. Each row stores harness, metadata and status while pinning the route and creation request. A globally unique `creation_request_id` makes reservation safe under concurrent retries. The object is addressed using the full public ID as its name in the pinned namespace. Request-scoped D1 sessions use `first-primary`. The registry supports `minimal-bash/v1` only.
+**Implemented:** opaque `ses_<UUID>` IDs and an authoritative D1 directory. Each row stores harness, metadata and a unified lifecycle/display status while pinning the route, creation request ID and canonical SHA-256 hash, not the full request. A globally unique `creation_request_id` makes reservation safe under concurrent retries. The object is addressed using the full public ID as its name in the pinned namespace. Request-scoped D1 sessions use `first-primary`; input/read routing selects only route and status. Current source and live routing support `minimal-bash/v5` only. Retained older directory records remain visible but cannot be resumed through the new registry.
 
 ## 8. Session creation and initialization
 
@@ -307,7 +312,7 @@ Implemented minimal-bash creation envelope (replace example resource UUIDs with 
 ```json
 {
   "requestId": "creation-request-id",
-  "harness": { "id": "minimal-bash", "version": "v1" },
+  "harness": { "id": "minimal-bash", "version": "v5" },
   "config": {
     "provider": "openai",
     "modelId": "gpt-5.6-sol",
@@ -328,239 +333,144 @@ Initial flow:
 2. Reserve or recover the session identity using the creation request key.
 3. Record sufficient routing information to retry initialization.
 4. Invoke the selected object's initialization method.
-5. Validate the harness configuration and initialize runtime and harness schema/state.
-6. Persist the fixed config and initialization result.
-7. Mark creation ready and return the session ID.
+5. Bootstrap the fixed runtime/harness schema once if absent; validate config and resolve defaults.
+6. Atomically persist identity, resolved config and harness initial state. No initialization alarm, processing kick, operation, prompt message or D1 status write occurs in the DO.
+7. The API changes D1 status from `initializing` to `idle` and returns the session. Duplicate creation cannot overwrite a later harness status.
 
 Initialization must be idempotent: the same identity and config recover the existing result; conflicting configuration is rejected. A creation record may remain `initializing` until the object confirms completion.
 
-The routing store and session SQLite do not share a transaction. Initialization therefore needs an explicit retryable protocol. A lost response after successful initialization must not create a second session. Step 3 persists definitive invalid-config failures; changing content requires a new creation request ID. Original content is compared structurally, so key order does not matter. Transient failures preserve the reservation and return 503; the same request resumes initialization. Successful retries return the same session. Reservations currently have no expiry or background sweeper, so abandoned creation progresses only when the backend retries. Session reads and admission require a ready entry. See [the concrete API and recovery contract](apps/agent-api/README.md).
+The routing store and session SQLite do not share a transaction. A lost initialization response must not create a second session. Invalid config becomes `initialization_failed`; correcting content needs a new request ID. The API compares canonical request hashes, ignoring object-key order but preserving array order. Transient failures retain `initializing` and return 503; a backend retry resumes initialization. The DO checks identity and reuses resolved config without revalidation. There is no creation/status sweeper. Reads/admission reject initializing, initialization_failed and destroyed; other display statuses are not execution gates. See [the concrete API and recovery contract](apps/agent-api/README.md).
 
 ## 9. Session-local persistence
 
-Keep the authoritative inbox, harness data, operation records, and outbox in the same SQLite database. This makes the event-consumption boundary local.
+The replay runtime keeps four tables in the session's SQLite database:
 
-Conceptual runtime-owned records:
-
-| Record/table | Purpose |
+| Table | Contents |
 |---|---|
-| `session_metadata` | Session identity, fixed config, initialization and version metadata |
-| `inbox` | Input identity, sequence, kind, payload/reference, and processing state |
-| `operations` | Requested provider/type/version, submission identity, worker job handle, execution outcome, and reconciliation information; no retained request input |
-| `outbox` | Immutable input awaiting acceptance, stable delivery identity, attempt state, and next attempt time; deleted on handoff |
-| `deadlines` | Due work such as retries, reconciliation, or harness timers |
-| Migration records | Applied runtime and harness schema migrations |
+| `runtime_session` | Identity, resolved config, created time and last allocated input sequence. |
+| `runtime_inbox` | Ordered event, canonical hash, inline pending body, consumed time, and per-head retry/error/blocked metadata. Consumption releases the body; hashes remain. |
+| `runtime_pending_operations` | Accepted-job receipts: operation ID, source input sequence, operation key, provider and job ID. Removed when completion handling commits. |
 
-These are logical records, not a finalized SQL schema. Some may be combined once constraints and access patterns are specified.
+There is **no outgoing request persistence**, outbox, historical operation/outcome ledger or separate progress table. The durable replay source is the unconsumed input plus committed harness state/config/code. Pending receipt rows do not store requests or results.
 
-Harness-owned tables can represent messages, context segments, pending steering, tool calls, user waits, plans, or anything else needed by that harness. There is no requirement to serialize all state into one JSON blob.
+Harness tables remain separate. Minimal-bash has messages, pending steering and execution state/cursor. All messages/events are inline JSON; no chunk tables remain. An idle user message is appended directly by the local commit, without first staging it. Only steering/held messages are pending. No generated run-started/finished/cancelled custom transcript entries remain.
 
-The runtime and harness own separate tables and migration histories. The handler's allowed writes occur within the runtime's transaction; it cannot commit independently or corrupt runtime-owned records through its normal interface.
-
-Persist only what is required by the selected durability and replay contracts. Retention and pruning must preserve deduplication and recovery for the supported retry period.
+All tables bootstrap once in one transaction. There is no SQL migration history; a changed runtime/harness version gets a fresh namespace.
 
 ## 10. Harness interface and transaction boundary
 
-The handler processes one input using local state and returns without waiting for external execution.
+The deployed harness stores inline JSON only and bounds individual results/messages. See the [rollout procedure](apps/harness-minimal-bash/README.md#setup-and-rollout).
 
-Illustrative interface:
-
-```ts
-interface HarnessDefinition<Config, Input extends EventBody> {
-  readonly identity: HarnessIdentity;
-  readonly migrations: readonly SqlMigration[];
-  readonly operations: readonly Readonly<OperationDefinition>[];
-  parseConfig(input: JsonValue): Config;
-  parseInput(input: EventBody): Input;
-  initialize(ctx: HarnessContext<Config>): undefined;
-  handle(event: InputEnvelope<Input>, ctx: HarnessContext<Config>): undefined;
-}
-```
-
-These milestone-one types are now defined by the [harness API package](packages/harness-api/README.md). The `undefined` return types reject async handlers at compile time; the runtime must still enforce synchronous transactional execution. Operation and timer capabilities described below belong to later milestones.
-
-The context should provide:
-
-- Read access to fixed configuration.
-- Transaction-scoped access to harness-owned tables.
-- A way to record external operations and immediately receive local operation IDs.
-- A way to request timers or user waits as supported by the contract.
-
-Conceptually:
+The [harness contract](packages/harness-api/README.md) separates deterministic decisions from writes:
 
 ```ts
-handle(event, ctx) {
-  const operationId = ctx.requestOperation({
-    provider: "tools",
-    tool: "apply_patch",
-    version: "1",
-    input: { machineId: ctx.config.machineId, patch: event.patch },
-  });
-
-  ctx.savePendingTool(operationId);
+interface TransitionPlan<Changes> {
+  changes: Changes; // JSON-compatible and in-memory only
+  operations: readonly (OperationRequest & { key: string })[];
+  status?: HarnessStatus;
 }
+// Synchronous hooks on HarnessDefinition<Config, Input, Changes>:
+handle(input, readContext): TransitionPlan<Changes>;
+apply(changes, writeContext): undefined;
 ```
 
-This is pseudocode for a patch-related event, not a universal handler implementation. `requestOperation()` only records local intent. It does not submit a network request.
+`handle` may read committed harness tables and frozen config. It must not write, use clocks/randomness, perform external I/O or depend on mutable process state. It reconstructs exactly the same decisions after activation loss. `operationId(key)` is pure, stable and available before submission so the plan can reference outgoing operations.
 
-The runtime commits together:
+The runtime validates the entire plan and submits its operations **before** calling `apply`. Then one local transaction:
 
-```text
-mark input consumed
-+ update harness-owned state/history
-+ create local operations
-+ create outbox actions
-```
+- applies the proposed harness writes;
+- records accepted-job receipts;
+- queues immediate/rejected completion events;
+- consumes the source input and releases its inline body;
+- removes the pending receipt for any completion being consumed.
 
-A failed handler must cause rollback of the whole transition. Catching an error and returning normally must not accidentally commit partial work. Treat a synchronous handler as a contract: no returned promise, network call, remote file mutation, or independently committed write inside it.
+Multiple independent operations are allowed per handle; order in the array does not imply execution order. Minimal-bash keeps its tools serial by requesting dependent work in later handles. Each operation has a unique stable key in its transition.
 
-Cloudflare's SQLite `transactionSync()` supplies the synchronous transaction boundary and rolls back when its callback throws. The application must still enforce correct error propagation. [SQLite transaction API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#transactionsync)
+Only the local commit is all-or-nothing. External effects may already have occurred if commit fails or another operation rejects. Recovery must replay the same identities, not issue replacement work. `changes` and outgoing payloads are never persisted as a second plan/outbox.
 
-In-memory objects are not rolled back by SQLite. Avoid treating a mutated in-memory cache as authoritative after a failed transition; reload or invalidate it.
-
-Large R2 payloads or remote information required for a transition must be fetched outside this synchronous boundary. The handler then operates on prepared data and locally consistent state; it cannot `await` a fetch halfway through its transaction.
+Initialization remains synchronous local-only. Optional status intent is published best-effort after local commit, never stored as DO display status. SQL contexts expire when the hook returns; harness code is trusted and must not read/write runtime tables or retain cursors.
 
 ## 11. Inbox admission, ordering, and advancement
 
-Every accepted logical input should be offered to the harness individually. Transport duplicates are deduplicated before they become additional logical inputs.
+Admission still authenticates/routes at agent-api, snapshots/validates input at the DO, pre-arms a recovery wakeup, deduplicates by event ID/hash, assigns a sequence and persists the event. The driver kicks background processing before returning. Acceptance means durable retention, not completed handling.
 
-Examples include user messages, steering, wait resolutions, cancellation requests, operation completions, and due timers. The runtime must not decide that an input is irrelevant solely because the session is currently waiting.
-
-Initial admission flow:
-
-1. The API validates and authorizes the request envelope.
-2. It resolves the session and invokes its admission method.
-3. The object deduplicates the event ID and assigns a session-local sequence.
-4. It persists the event with a durable recovery path.
-5. It requests immediate processing and returns an acceptance receipt after durable admission.
-
-Acceptance means the input is retained, not that the agent has completed it. Reusing an input ID with conflicting content should be rejected rather than silently accepting ambiguous data.
-
-Processing is conceptually:
+The single processor does:
 
 ```text
-while pending input exists and this processing slice has budget:
-    transaction:
-        read the next pending input
-        invoke harness.handle(one input)
-        commit state, operations, outbox, and consumed marker
-
-attempt eligible outbox delivery outside harness transactions
-arrange a continuation or future recovery wakeup for remaining work
+load oldest pending input
+  -> read-only handle / validate complete in-memory plan
+  -> submit independent operations (bounded concurrency)
+  -> wait for every acceptance or definitive rejection
+  -> atomically apply changes + receipts + consume source
+  -> publish explicit display status
+  -> process next pending input
 ```
 
-One object activation can apply several separate transactions. There is no need to stop and reactivate the object between events.
+Throws/timeouts mean unknown acceptance. They keep the source pending, with backoff. While warm, resolved sibling receipts and the plan stay in memory; after restart all submissions replay under the same IDs. Later inputs/completions can be admitted, but their handlers cannot overtake that source input. This submission barrier is an explicit tradeoff.
 
-Order is the session's admission order, not a guarantee of global wall-clock order across different producers. External operations can complete in any order, and the harness must interpret those outcomes against its saved state.
+A definitive rejection becomes `runtime.operation.completed` with a submission-origin failure and null job ID. Accepted siblings are not rolled back. Immediate completions queue through the same inbox mechanism, not recursively into the harness.
 
 ## 12. Concurrency, wakeups, and recovery
 
-The unit of serialization is a short local harness transition. Different sessions progress independently; one session may have multiple external operations outstanding.
+One driver per object serializes short admissions/planning/commits/alarm changes. It never holds that admission lock across provider calls. Different sessions progress independently. Submission concurrency defaults to eight, with no operation-count limit.
 
-Async request handlers can interleave while awaiting external I/O. A submission awaiting acknowledgement must not permit two independent processors to commit conflicting advancements or lose newly admitted work. The runtime needs a single progress coordinator per active instance and database checks that remain correct after reactivation. An in-memory flag is an optimization, not the durable recovery mechanism.
+Input/completion admission establishes a recovery alarm **before** commit. Processing/alarm slices pre-arm too. The final alarm decision uses only the pending inbox head, serialized against new admissions. Blocked heads have an explicit recovery path and no automatic hot retry loop.
 
-Cloudflare activates objects on requests and alarms. SQLite insertion is not itself a callback to the harness: our runtime starts the processing loop.
+Unknown submissions retry with jittered backoff. Repeated deterministic prepare/apply failures block the head; an explicit operator resume retries it without skipping it. Initialization schedules no alarm. Accepted jobs alone also schedule no alarm: workers own their delivery, so a session can become inactive while awaiting a result.
 
-### Recovery invariant
-
-> Pending work must remain durably discoverable and have a durable way to resume, or an explicit recorded blocked/failure state with a recovery path.
-
-Do not implement “commit input, then eventually set an alarm” with an unprotected crash gap. Admission, transition completion, and alarm rescheduling need a storage protocol whose ordering is proven against failures. Where a wakeup cannot share an atomic boundary, establish it before committing work that relies on it, with serialization and rechecks to prevent another handler from clearing it prematurely. The exact API sequence must be validated in the first runtime integration tests.
-
-The alarm is a recovery/continuation mechanism, not a fixed-delay gate on normal inputs. Normal admission and completion should attempt progress immediately.
-
-Each object has one alarm. Keep pending deadlines in storage and schedule the earliest necessary wakeup. Alarm execution is at least once, and platform retries are bounded; the runtime must persist its own retry/failure decisions and reschedule when required. [Cloudflare alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)
-
-Before clearing a wakeup or declaring the processor idle, recheck pending inputs, deliveries, and deadlines. A process-local promise or background task does not substitute for this protocol.
-
-When there is no immediate work, return. The object can become inactive while its session remains logically `running` and external jobs execute. A constructor can run again later; recover from SQLite rather than expecting heap state to survive.
+Heap state is only a cache. Correctness after reactivation comes from the input, committed harness state, pinned code/config and worker idempotency. Detailed defaults and failure behavior are in the [runtime contract](packages/session-runtime/README.md).
 
 ## 13. External operation contract
 
-An operation provider should expose the following semantics, whether through HTTP or a service binding:
+The runtime's provider interface exposes only `submit(submission, signal)`:
 
-```text
-submit(requestId, input, completionDestination) -> job handle and current status
-get(jobHandle)                               -> status and result/error
-requestCancel(jobHandle)                     -> acknowledgement
-```
+- `accepted { jobId }`: worker durably owns execution and result delivery.
+- `completed { jobId, outcome }`: accepted and already terminal.
+- `rejected { error }`: definitive non-acceptance.
+- Throw/timeout: acceptance unknown; retry the same identity/content.
 
-This is a semantic contract, not a claim that the existing gateways already use these exact endpoint names.
+Identity is derived from session ID, harness ID/version, source input sequence and stable operation key. The compact ID includes the input sequence and SHA-256 of the tuple. Both wire fields `operationId` and `submissionId` use that identity. A model tool-call ID alone is not sufficiently scoped.
 
-Required properties:
+Workers must preserve idempotency through the recovery horizon, including after an early completion. Same identity/content recovers the same job/rejection; changed content conflicts. No automatic retention window is introduced here. There is no exactly-once guarantee for arbitrary machine side effects.
 
-- Retrying a request with the same identity and content recovers the same logical job.
-- Reusing that identity with conflicting content is rejected.
-- Acceptance means a durable execution owner has taken responsibility.
-- Status and results remain queryable for a defined period.
-- Completion delivery can be retried and deduplicated.
-- A cancellation acknowledgement is distinct from confirmation that execution stopped.
+The harness declares allowed provider/type/version combinations. The host binds only implemented workers and chooses destinations/authentication. The runtime rejects any undeclared operation before submitting the batch. Worker D1/Queue/gateway choices are outside the harness contract.
 
-Define the request identity in the session/operation scope. A model-generated tool-call ID alone is insufficient. Persist provider/type/version and correlation with the operation, and immutable input in its temporary outbox entry. The harness declares allowed provider/type/version combinations; the host supplies their worker adapters. A missing declared adapter prevents driver construction, and an undeclared operation is rejected before insertion.
+Private Worker `submit` takes a structured object and returns `{ result: ProviderSubmitResult }`. The host uses `parseProviderSubmitReply` to validate nested JSON and dispose Cloudflare's outer RPC result object. Both stateless adapters remove diagnostic `get`. Hard cancellation is not implemented.
 
-Acceptance transfers execution and recovery responsibility to the operation worker. In the same local transaction that records the accepted job, the session deletes its outbox row and input. Terminal results also delete any remaining outbox row. Session status reconciliation uses only job/correlation IDs; a missing accepted job records an error and retries status checks, never the original operation submission. Worker storage and queue choices do not affect this contract.
+## 14. Replay dispatch and completion
 
-### Identities at the boundaries
+Gateway callbacks go to operation workers, never agent-api. The stateless LLM adapter supplies `{ routeKey, sessionId, operationId, submissionId }` as per-job gateway `clientContext`. Its receiver verifies the signed context and inline schema-v2 result, then forwards to the allowlisted DO without a gateway GET, D1 mapping, Queue or cron. It returns 204 only after durable admission; admission failures return 503 for gateway retry. Terminal submission replay still fetches job detail and returns the outcome inline. Execution now uses a stateless shared signed v3 callback router and bash adapter, with full routing context and inline result; acknowledgement follows DO admission without a local ledger.
 
-| Identity | Allocated by | Used for |
-|---|---|---|
-| Local operation ID `A` | Session runtime | Harness references and callback correlation before submission |
-| Tool job handle `T` | Tool service | Status, cancellation, and result retrieval through the tool interface |
-| Gateway job ID `E` | Execution gateway | Tracking the underlying execution job |
+At the DO, completion admission checks `{ operationId, submissionId, provider, jobId, outcome }` against a pending receipt. If submission has not locally committed, it validates against the cached/reconstructed head plan instead. The event is admitted behind its source input in the existing inbox. No special early-result table exists.
 
-For an LLM operation, the session's job handle belongs to the LLM operation worker, which owns any upstream gateway job mapping. For a thin tool, `T` may wrap `E`. Their logical responsibilities remain distinct even if an implementation reuses values.
+Duplicate completion hashes return the same receipt even after body cleanup and pending-row removal. Conflicting correlation/content is rejected. Both gateways mark delivery after our synchronous callback acknowledgement following that receipt. Neither adapter keeps a local delivery ledger. Harness processing may happen later.
 
-## 14. Outbox dispatch and completion
-
-The initial dispatcher runs inside the shared session runtime. It selects eligible committed outbox actions, submits them, and saves acceptance information. It awaits acceptance, not full job execution.
-
-Delivery is retried using the same request identity. A timeout does not prove that the provider rejected the request or never created a job.
-
-Keep delivery progress separate from execution outcome. A late submission acknowledgement must never regress an operation already recorded as complete.
-
-Completion flow:
-
-1. The external gateway sends a callback to its configured receiver. For execution jobs, the shared callback worker verifies the signature, persists the event and privately routes it to the tool identified by `clientContext`.
-2. The operation worker durably admits the notification, resolves its session/operation, retrieves the authoritative result and delivers a normalized completion through private session admission. Router-to-tool and tool-to-session delivery have separate durable receipts and independent retries; the tool still reconciles through gateway status queries.
-3. The object validates the operation/provider relationship and deduplicates the notification.
-4. It atomically records the outcome and creates the logical completion inbox event, with the required recovery wakeup protocol.
-5. It acknowledges durable admission and attempts progress.
-6. The next relevant handler invocation interprets the completion.
-
-The callback may arrive before the submission response is saved. Correlation by `A` must support that order. Repeated or conflicting terminal notifications require defined handling; they must not produce repeated successful state transitions.
-
-Callback delivery is the prompt path. Status queries to the operation worker reconcile pending operations when callbacks are delayed or lost. The session never polls an upstream gateway directly. The runtime retains bounded reconciliation errors on the operation after its request input has been deleted.
+There is no DO status reconciliation. Gateway webhook retries recover callback/admission failures and lost receipts for both LLM and execution. Each gateway currently has eight attempts, a 24-hour retry-window cap and a ten-second callback timeout; our whole callback budget is eight seconds. Exhaustion can leave a session waiting and requires gateway redelivery, not independent Worker recovery. No bash/router D1/Queue/cron remains. A missing accepted upstream job never authorizes blindly executing the command again.
 
 ## 15. Complete message-to-result flow
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant A as API Worker
-    participant S as Session runtime + SQLite
-    participant H as Harness
-    participant P as Operation worker
-
-    U->>A: Send message with stable event ID
-    A->>S: Admit input
-    S->>S: Persist inbox event and recovery path
-    S-->>A: Acceptance receipt
-    A-->>U: Accepted
-    S->>H: handle(one event, transaction context)
-    H->>S: State changes + requested operation
-    S->>S: Commit consumed event + state + operation + outbox
-    S->>P: Submit with stable request ID
-    P-->>S: Durable job acceptance
-    S->>S: Save worker job handle and delete request outbox row
-    Note over S,P: Provider executes while session object can be inactive
-    P->>S: Private completion admission
-    S->>S: Record outcome + completion inbox event
-    S->>H: handle(completion event, transaction context)
-    H->>S: Next state + optional operations
-    S->>S: Commit next transition
+```text
+user -> agent-api -> session inbox (prearmed, durable receipt -> user)
+                        |
+                        v
+                 harness read-only plan
+                        |
+                        v
+               operation worker submit
+                 (durable job ownership)
+                        |
+                        v
+        local commit: harness changes + small receipts + consume
+                        |
+              session can become inactive
+                        |
+gateway callback -> operation worker -> session completion inbox
+                        |
+                        v
+        next read-only plan -> submissions -> next local commit
 ```
 
-The diagram shows conceptual stages. Exact ordering of the immediate processing attempt versus returning the acceptance response is an implementation choice, provided admission is durable and processing remains recoverable.
+Full LLM history is built from committed transcript plus proposed messages. It is sent without a separate SQLite request copy. Completion data exists in the inbox until consumed, then relevant assistant/tool messages remain in harness history.
 
 ## 16. Tool services and apply_patch
 
@@ -650,7 +560,7 @@ Implemented minimal-bash policy is intentionally softer: mark `cancelling`, fini
 
 ### Visible status
 
-The public status enum is `idle`, `running`, `failed`, `cancelling`, `cancelled`, and `waiting`. Minimal-bash maps internal `llm`/`bash` to running and uses cancelling/cancelled/failed/idle as documented in its package; it does not use waiting. Other harnesses may define different transitions.
+The public status enum is `initializing`, `initialization_failed`, `idle`, `running`, `failed`, `cancelling`, `cancelled`, `waiting`, and `destroyed`. The API owns initialization and initial idle. The harness explicitly selects subsequent display statuses when its lifecycle changes; the runtime does not infer them from phase or processing errors. Minimal-bash does not use waiting. Destroyed is reserved for retirement, with no destroy endpoint yet.
 
 Visible status is not a statement about CPU activity. A session can be `running` while its object is inactive. Multiple pending operations or a user wait may require richer state than one status field. Session lifetime and the completion of one run are also different concepts.
 
@@ -664,7 +574,7 @@ Routing and creation idempotency must not depend blindly on a stale projection. 
 
 Step 3 implements authoritative routing, creation recovery, metadata and status listing in D1. Avoid a single global coordinator object in every session's transition path.
 
-Minimal-bash publishes committed status with a persisted per-session revision; stale writes cannot overwrite a newer status. A bounded scheduled sweep repairs lost/failed updates. This is eventual status projection, separate from authoritative directory routing. The final D1 schema remains a single fresh-database `0001_initial.sql`; an old applied schema requires an explicit reset or separately reviewed migration, not automatic compatibility handling.
+Minimal-bash publishes explicit status after commit using nonblocking D1 writes ordered within an activation. No display-status row, revision, retry ledger or status cron exists in the DO/host. A failed/lost write can leave status stale until a later explicit transition; cross-activation write ordering is not guaranteed. Execution phase/cursors remain locally durable and independent of display status. The final D1 schema is a fresh-database `0001_initial.sql`; the earlier v2 rollout used a fresh directory. V4 reuses that D1 schema/database and creates a fresh DO namespace; it does not rerun an edited 0001.
 
 ### R2
 
@@ -674,45 +584,30 @@ For a required immutable payload, the proposed ordering is upload successfully f
 
 ### Queues
 
-Queues are optional for the initial interactive path. Useful future roles include listing-index updates, webhook delivery, log export, provider submission buffering, and tenant fairness.
+Current session-to-worker submission is direct private RPC. LLM and execution callbacks are stateless adapters; neither uses Queues or D1. The upstream gateways' durable webhook systems own accepted-job delivery retries. Retained remote resources from older deployments require separately approved cleanup.
 
-If a queue is introduced between session and provider:
-
-```text
-commit session outbox
-    -> publish action
-    -> consumer submits to provider
-    -> consumer reports outcome to session
-```
-
-Publishing and SQLite commit are separate. Preserve the outbox, use stable identities, tolerate duplicate delivery, and enforce any required order at the session or operation layer. Exhausted delivery retries need an explicit recovery path.
-
-Ingress buffering also changes what an API acceptance receipt means. Do not silently change “durably in session inbox” to “only accepted by a transport queue.”
+A future queue-backed submit adapter must durably accept the work and own execution/result delivery before returning acceptance. An uncertain enqueue must replay with the same ID. Do not reintroduce a session request outbox implicitly or change the API receipt from "durably in the session inbox" to "only in a transport queue" without a separate architectural decision.
 
 ## 20. Migrations and release management
 
-There are three independent versions to track:
-
-1. Harness behavior version selected by the session.
-2. Runtime and harness SQL schema versions.
-3. Deployed code/runtime build version used for operations and diagnosis.
+Each harness version pins its runtime code, harness code and fixed SQL schema in its own namespace. Preserve build artifacts for diagnosis and for any old namespace that remains deployed.
 
 Cloudflare class/namespace lifecycle configuration is separate from SQL schema migration. Declaring a SQLite-backed class does not create our application tables. Use the current Wrangler configuration supported by the pinned tooling rather than copying an old example mechanically. [Class exports](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/)
 
-Initial schema strategy:
+Fixed schema strategy:
 
-- Runtime migrations belong to the runtime package.
-- Harness migrations belong to the harness package.
-- Run required migrations before admitting/processing requests against the new schema.
-- Record a migration and its SQL changes atomically where supported.
-- Upgrade objects lazily on activation; dormant objects may retain older schemas.
-- Guard initialization so requests cannot observe a partially initialized object.
+- Runtime and harness each provide bootstrap SQL statements.
+- On activation, one existence check decides whether bootstrap is needed.
+- Create all runtime/harness tables in one atomic transaction when absent.
+- Keep no migration history or schema validation/diff engine; existing objects skip bootstrap.
+- Resolve config defaults once and persist only that result. Initialization writes session/harness state atomically.
+- Deploy changed code/schema under a new harness version/namespace. Do not mutate a namespace's pinned deployment in place.
 
-Use `v1` for a behavior version that may need to coexist with `v2`, not for every code release. Compatible fixes may update a deployment. Incompatible behavior/state changes require an explicit compatibility or migration plan, or a separate deployment retained alongside the old one.
+The current deployment uses `minimal-bash/v7` / `MinimalBashSessionV7`. Existing sessions are not upgraded, copied or deleted. Preserve older host/code/data; pause traffic and drain old work before switching namespace bindings. See [deployment guidance](DEPLOYMENT.md).
 
 An old namespace is not immutable by itself: rebuilding its app against changed workspace dependencies changes its code. Preserve release artifacts and compatibility discipline when maintaining old behavior versions.
 
-A shared runtime fix reaches a harness only after that app is rebuilt and deployed. A monorepo commit is not an atomic multi-service rollout. Wire contracts must tolerate the intended mixed-version deployment window.
+A shared runtime fix reaches a harness only after that app is rebuilt and deployed. A monorepo commit is not an atomic multi-service rollout. This breaking rollout requires draining and a maintenance window; mixed old/new protocols are not supported.
 
 ## 21. Failure and retry semantics
 
@@ -720,13 +615,13 @@ A shared runtime fix reaches a harness only after that app is rebuilt and deploy
 |---|---|
 | Duplicate message delivery | Recover original admission; do not create another logical input |
 | Crash after input commit, before processing | Durable wakeup resumes the pending input |
-| Handler fails before transaction commit | Roll back local effects; input remains unconsumed |
-| Crash after transition commit, before dispatch | Committed outbox remains eligible for delivery |
+| Preparation fails | No external work or local changes; input remains pending |
+| Crash after remote acceptance, before local commit | Reconstruct plan and replay identical IDs, then commit locally |
 | Provider accepts, submission response is lost | Retry same identity and recover existing provider job |
-| Callback arrives before acceptance is stored | Correlate using local operation ID |
+| Callback arrives before acceptance is stored | Validate reconstructed plan; admit event behind the source |
 | Callback repeats | Preserve one logical completion event |
-| Acceptance arrives after completion | Add missing handle information without regressing outcome |
-| Callback is lost | Query provider status through reconciliation |
+| Mixed acceptance/rejection batch | Commit accepted receipts and synthetic rejection events; no remote rollback |
+| Callback is lost | Operation worker owns gateway reconciliation and delivery retry |
 | Object is evicted or deployment replaces instance | Reconstruct from durable records |
 | External operation finishes with a business error | Deliver outcome; harness decides the next action |
 | Tool host crashes with uncertain external effects | Preserve/report uncertainty according to provider contract |
@@ -734,9 +629,9 @@ A shared runtime fix reaches a harness only after that app is rebuilt and deploy
 | Session initialized but creation response is lost | Recover original identity and initialization result |
 | Index update is delayed | Authoritative session continues; listing may temporarily lag |
 
-Separate delivery retries from intentional re-execution. Runtime infrastructure retries delivery/reconciliation; the harness chooses new work after a result.
+Separate delivery retries from intentional re-execution. Runtime retries uncertain submissions; workers recover accepted jobs/delivery; the harness chooses new work after a result.
 
-Liveness assumes the platform and dependencies eventually become available and errors are recoverable. Poison-event handling, retry budgets, blocked-session representation, and administrative recovery are open decisions that must be resolved before production.
+Liveness assumes the platform and dependencies eventually become available and errors are recoverable. Head retry/block policy is implemented; administrative recovery tooling remains future work.
 
 ## 22. Security and tenant boundaries
 
@@ -773,12 +668,12 @@ Initial optimization priorities:
 
 - Keep harness transitions bounded and load only necessary history.
 - Submit jobs and return instead of waiting for full execution.
-- Use prompt callbacks with measured reconciliation cadence.
+- Use prompt callbacks; keep accepted-job recovery in the operation workers.
 - Avoid unnecessary token-by-token state-machine transitions.
 - Bound submission concurrency and retry amplification.
 - Measure downstream gateway capacity during bursts; object scaling does not remove provider limits.
 
-A shared delivery service becomes attractive when tenant fairness, provider-wide limits, or slow acceptance endpoints justify it. Operation ownership stays with the session even if delivery moves outside.
+A shared delivery service becomes attractive when tenant fairness, provider-wide limits, or slow acceptance endpoints justify it. Accepted-job execution/recovery ownership belongs to its operation worker; the session owns its next decision.
 
 ## 24. Streaming, reads, and retention
 
@@ -815,13 +710,13 @@ Essential behavior to verify:
 
 1. Retryable creation and initialization, including response loss.
 2. Duplicate/conflicting input IDs and session-local order.
-3. Rollback across harness state, input consumption, operations, and outbox.
+3. Atomic commit/rollback across harness changes, input consumption and acceptance receipts.
 4. Recovery after admission or transition commit without another user message.
 5. Stable provider identity across uncertain submissions.
 6. Completion-before-acceptance and duplicate callback races.
-7. Missing-callback reconciliation.
+7. Worker-owned missing-callback recovery; no session polling.
 8. Alarm rescheduling, concurrent admission, and bounded processing continuation.
-9. Migration and state recovery on reactivation.
+9. Fixed-schema bootstrap and deterministic state/operation replay on reactivation.
 10. Harness-specific steering, waits, and cancellation behavior.
 11. Cross-tenant rejection for session, callback, and tool access.
 12. Burst behavior, latency distribution, and downstream backpressure.
@@ -832,7 +727,7 @@ Passing an in-memory mock test alone is not evidence that the actual transaction
 
 Correlate requests using session ID, input ID, local operation ID, provider job handle, harness version, and deployment/runtime version.
 
-Useful measurements include admission-to-transition delay, transition duration, oldest inbox/outbox age, pending operation age, submission latency, retry counts, reconciliation success, duplicate callbacks, migration failures, and time until the next operation is accepted.
+Useful measurements include admission-to-transition delay, transition duration, oldest pending inbox age, pending operation age, submission latency, retry counts, worker recovery success, duplicate callbacks, migration failures, and time until the next operation is accepted.
 
 Logs should distinguish delivery failure, execution failure, and harness failure. Operators need a way to inspect why a session stopped making progress and resume recoverable work without manually inventing new operation IDs.
 
@@ -844,14 +739,14 @@ Build one working path before multiplying harnesses and tools.
 
 The implementation discussion consolidated the work into six milestones:
 
-1. **Local session core — complete:** shared contracts/harness interface, SQLite migrations, initialization, inbox deduplication, synchronous transactional handlers and test-only harness fixtures.
-2. **Durable operations — complete:** local operation IDs/outbox, provider submission and reconciliation, completion admission, alarms, bounded processing, durable echo fixture and recovery tests.
+1. **Local session core — complete:** shared contracts/harness interface, fixed-schema bootstrap, initialization, inbox deduplication, synchronous transactional handlers and test-only harness fixtures.
+2. **Durable operations — complete:** deterministic multi-operation plans, replay submission, atomic commit, pending receipts, completion admission and inbox recovery; worker-owned accepted-job delivery.
 3. **Authenticated API — complete locally:** simple trusted-backend auth, D1 directory and listing, retryable creation, deployment routing, input admission and restart/failure tests.
-4. **Real LLM integration — complete locally:** `llm-gateway-workers` handles gateway calls, polling and durable callback delivery; minimal-bash supplies the session host, full-history context policy and adapter. Live setup/validation remains.
+4. **Real LLM integration — complete locally:** `llm-gateway-workers` handles gateway submission and signed inline callback delivery; minimal-bash supplies the session host, full-history context policy and adapter. Live setup/validation remains.
 5. **Tool execution — bash complete locally:** `tool-pi-bash-workers` submits `execution.run`, returns a bounded tail/full-log reference and delivers results. Minimal-bash completes the model → serial tool → model cycle. Apply_patch and hard operation cancellation remain future work.
 6. **Minimal coding harness — complete locally; hardening remains:** config/account references, native transcript, batched steering, graceful cancellation/resume, read APIs and directory projection are implemented. Next: compaction, user waits, hard cancellation, streaming, retention/quotas and measured burst behavior.
 
-The exact implemented wire contracts live in `packages/contracts`; app/runtime READMEs distinguish current guarantees from future work. Gateway transport belongs to the independent LLM and bash operation workers; the removed gateway-client package is not required. Operation inputs and outcomes allow 8 MiB of JSON each; large payloads use transactional SQLite chunks in the runtime and minimal-bash transcript. The helper is `packages/sqlite-json`; R2 references remain future work. API bodies remain capped at 64 KiB. Minimal-bash does not estimate context tokens locally: the provider's terminal context-overflow error fails the run. No compaction is implemented. Bash returns bounded text plus a machine-local full-output file reference owned and expired by the execution host.
+The exact implemented wire contracts live in `packages/contracts`; app/runtime READMEs distinguish current guarantees from future work. Gateway transport belongs to the independent LLM and bash operation workers; the removed gateway-client package is not required. Operation inputs allow 8 MiB of in-memory JSON; outcomes and individual message rows are capped at 1,900,000 UTF-8 bytes. SQLite storage is inline only: chunk tables and the shared chunk helper were removed. Oversized gateway results deliver a small failure and mark the harness failed; oversized harness message rows fail during planning rather than poisoning SQL writes. R2 references remain future work. API bodies remain capped at 64 KiB. Minimal-bash does not estimate context tokens locally: the provider's terminal context-overflow error fails the run. No compaction is implemented. Bash returns bounded text plus a machine-local full-output file reference owned and expired by the execution host.
 
 ## 28. Open decisions register
 
@@ -859,7 +754,7 @@ The exact implemented wire contracts live in `packages/contracts`; app/runtime R
 |---|---|
 | First coding harness | Minimal-bash is implemented; future harness variants and broader tools |
 | Identity/routing | Reservation retention/cleanup and future deployment retirement; Step 3 uses opaque IDs, D1 and retryable creation |
-| Listing | D1 status projection/repair is implemented for minimal-bash; fleet-scale throughput, filtering and staleness SLOs remain |
+| Listing | Explicit best-effort D1 status publication is implemented; no cron repair; filtering and staleness handling remain |
 | Gateway integration | Longer-term result retention and whether full-history submission should later use gateway continuation as an optimization |
 | Callback flow | Tool callback translation and authentication |
 | Runtime schema | Concrete tables, indexes, statuses, and retention constraints |
