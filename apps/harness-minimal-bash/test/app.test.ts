@@ -9,10 +9,16 @@ import type { Job, Page } from "./stack.ts";
 test("API routes a real minimal bash session through LLM and serial bash RPC with transcript reads and D1 statuses", async () => {
   const s = await startStack();
   try {
-    const id = await s.create("flow"); await s.input(id, "prompt");
+    const id = await s.create("flow");
+    assert.deepEqual((await s.page(id)).messages, []);
+    await s.db.prepare("CREATE TABLE status_audit(status TEXT)").run();
+    await s.db.prepare("CREATE TRIGGER audit_status AFTER UPDATE OF status ON sessions BEGIN INSERT INTO status_audit VALUES(NEW.status); END").run();
+    await s.input(id, "prompt");
     let jobs = await until(() => s.control<Job[]>("/jobs"), jobs => jobs.length === 1);
-    assert.equal(jobs[0]!.request.destination.routeKey, "minimal-bash-v1");
+    assert.equal(jobs[0]!.request.destination.routeKey, "minimal-bash-v7");
     assert.deepEqual(llmInput(jobs[0]!).providerOptions.reasoning, { effort: "medium", summary: "auto" });
+    assert.match(llmInput(jobs[0]!).instructions!, /\/workspace/);
+    assert.equal(llmInput(jobs[0]!).messages.some(message => message.role === "system"), false);
     await until(() => s.db.prepare("SELECT status FROM sessions WHERE session_id = ?").bind(id).first<{ status: string }>(), row => row?.status === "running");
     await s.control("/finish", { id: jobs[0]!.id, outcome: llmResult(["pwd", "ls"]) });
     jobs = await until(() => s.control<Job[]>("/jobs"), jobs => jobs.length === 2);
@@ -36,8 +42,7 @@ test("API routes a real minimal bash session through LLM and serial bash RPC wit
     const one = await s.request<Page>(`/v1/sessions/${id}/messages?limit=1`); assert.equal(one.nextCursor, 1);
     assert.equal((await s.request<Page>(`/v1/sessions/${id}/messages?after=1&limit=1`)).messages[0]!.sequence, 2);
     await until(() => s.db.prepare("SELECT status FROM sessions WHERE session_id = ?").bind(id).first<{ status: string }>(), row => row?.status === "idle");
-    await s.control("/stale-status", { sessionId: id });
-    assert.equal((await s.db.prepare("SELECT status FROM sessions WHERE session_id = ?").bind(id).first())!.status, "idle");
+    assert.deepEqual((await s.db.prepare("SELECT status FROM status_audit ORDER BY rowid").all()).results, [{ status: "running" }, { status: "idle" }]);
   } finally { await s.app.dispose(); }
 });
 test("graceful cancellation finishes the current turn, persists held messages, and requires explicit resume", async () => {
@@ -59,15 +64,21 @@ test("graceful cancellation finishes the current turn, persists held messages, a
     assert.equal(jobs[3]!.request.submission.request.provider, "llm"); assert.equal((await s.page(id)).state.pendingMessageCount, 0);
   } finally { await s.app.dispose(); }
 });
-test("status publication recovers from D1 write failure through the scheduled sweep", async () => {
+test("D1 display status failure does not block execution or infer status on reads", async () => {
   const s = await startStack(); try {
     const id = await s.create("status-repair");
     await s.db.prepare("CREATE TRIGGER fail_status BEFORE UPDATE OF status ON sessions BEGIN SELECT RAISE(ABORT, 'injected'); END").run();
-    await s.input(id, "prompt"); await until(() => s.page(id), page => page.state.status === "running");
-    await until(() => s.control<Job[]>("/jobs"), jobs => jobs.length === 1);
+    await s.input(id, "prompt");
+    const jobs = await until(() => s.control<Job[]>("/jobs"), jobs => jobs.length === 1);
+    assert.ok((await s.page(id)).state.activeOperationId);
     assert.equal((await s.db.prepare("SELECT status FROM sessions WHERE session_id = ?").bind(id).first())!.status, "idle");
-    await s.db.prepare("DROP TRIGGER fail_status").run(); await s.control("/recover", {});
-    assert.equal((await s.db.prepare("SELECT status FROM sessions WHERE session_id = ?").bind(id).first())!.status, "running");
+    await s.db.prepare("DROP TRIGGER fail_status").run();
+    assert.equal((await s.page(id)).state.status, "idle");
+    const runId = (await s.page(id)).state.runId;
+    await s.input(id, "cancel", "minimal_bash.cancel", { runId });
+    await until(() => s.page(id), page => page.state.status === "cancelling");
+    await s.control("/finish", { id: jobs[0]!.id, outcome: llmResult() });
+    await until(() => s.page(id), page => page.state.status === "cancelled");
   } finally { await s.app.dispose(); }
 });
 test("restart preserves the active bash cursor, steering, and stable operation identity", async () => {
@@ -98,11 +109,13 @@ test("validation, authentication, session isolation, and removed endpoints remai
     await s.request(`/v1/sessions/${id}/inputs`, "POST", { eventId: "bad", event: { type: "minimal_bash.follow_up", payload: {} } }, 400);
     await s.input(id, "prompt"); await until(() => s.page(id), page => page.state.status === "running");
     assert.equal((await s.page(other)).state.status, "idle");
-    const wrong = await s.control<{ ok: boolean }>("/internal", { sessionId: id, command: { action: "initialize", value: { session: { sessionId: other, harness: { id: "minimal-bash", version: "v1" } }, config } } });
+    const wrong = await s.control<{ ok: boolean }>("/internal", { sessionId: id, command: { action: "initialize", value: { session: { sessionId: other, harness: { id: "minimal-bash", version: "v7" } }, config } } });
     assert.equal(wrong.ok, false);
     const host = await s.app.getWorker("host"); assert.equal((await host.fetch("https://host/sessions/x/inputs", { method: "POST" })).status, 404);
-    assert.deepEqual(await (await host.fetch("https://host/health")).json(), { ok: true, harness: { id: "minimal-bash", version: "v1" } });
+    assert.deepEqual(await (await host.fetch("https://host/health")).json(), { ok: true, harness: { id: "minimal-bash", version: "v7" } });
     const deploy = JSON.parse(await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
     assert.equal(deploy.workers_dev, false); assert.equal(deploy.preview_urls, false); assert.equal(deploy.routes, undefined);
+    assert.equal(deploy.triggers, undefined);
+    assert.equal(deploy.name, "managed-agents-harness-minimal-bash-v7");
   } finally { await s.app.dispose(); }
 });
