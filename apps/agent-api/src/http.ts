@@ -1,8 +1,12 @@
-import { ContractException, parseJsonValue } from "@managed-agents/contracts";
-import type { ContractErrorCode, JsonValue } from "@managed-agents/contracts";
+import { ContractException } from "@managed-agents/contracts";
+import type { ContractErrorCode } from "@managed-agents/contracts";
 
 export class ApiError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string) { super(message); }
+  readonly status: number;
+  readonly code: string;
+  constructor(status: number, code: string, message: string) {
+    super(message); this.status = status; this.code = code;
+  }
 }
 export function json(value: unknown, status = 200): Response {
   return Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
@@ -22,7 +26,7 @@ export function method(request: Request, expected: string): void {
   if (request.method !== expected) throw new ApiError(405, "METHOD_NOT_ALLOWED", `Use ${expected}.`);
 }
 export const MAX_BODY_BYTES = 64 * 1024;
-export async function readJson(request: Request): Promise<JsonValue> {
+export async function readJson(request: Request): Promise<unknown> {
   if (request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") {
     throw new ApiError(415, "UNSUPPORTED_MEDIA_TYPE", "Use Content-Type: application/json.");
   }
@@ -42,7 +46,7 @@ export async function readJson(request: Request): Promise<JsonValue> {
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  try { return parseJsonValue(JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes))); }
+  try { return JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)) as unknown; }
   catch { throw new ContractException("INVALID_REQUEST", "Expected a valid JSON body."); }
 }
 export function noQuery(url: URL): void {
