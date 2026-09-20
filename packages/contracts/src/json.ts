@@ -1,6 +1,10 @@
 import { ContractException } from "./errors.ts";
 import type { ContractErrorCode } from "./errors.ts";
 
+/** Below Cloudflare's 2 MB SQLite row limit, including space for row metadata. */
+export const MAX_INLINE_ROW_BYTES = 1_950_000;
+export const utf8Bytes = (text: string): number => new TextEncoder().encode(text).byteLength;
+
 export type JsonValue =
   | null
   | boolean

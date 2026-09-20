@@ -37,7 +37,12 @@ export interface InputReceipt {
 
 /** Validate the generic body. The harness validates its supported types/payloads. */
 export function parseEventBody(value: unknown): EventBody {
-  const event = record(parseJsonValue(value, "INVALID_INPUT"), ["type", "payload"], "event", "INVALID_INPUT");
+  return eventBody(parseJsonValue(value, "INVALID_INPUT"));
+}
+
+/** Internal shape check after the envelope's single recursive JSON validation. */
+function eventBody(value: JsonValue | undefined): EventBody {
+  const event = record(value, ["type", "payload"], "event", "INVALID_INPUT");
   if (!Object.hasOwn(event, "payload")) {
     throw new ContractException("INVALID_INPUT", "event.payload is required.");
   }
@@ -51,6 +56,6 @@ export function parseSubmitInputRequest(value: unknown): SubmitInputRequest {
   const request = record(parseJsonValue(value), ["eventId", "event"], "request");
   return {
     eventId: nonemptyString(request.eventId, "eventId"),
-    event: parseEventBody(request.event),
+    event: eventBody(request.event),
   };
 }
