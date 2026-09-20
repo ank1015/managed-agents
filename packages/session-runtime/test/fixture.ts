@@ -1,7 +1,7 @@
 import type { DurableObjectState } from "@cloudflare/workers-types";
 import { ContractException } from "@managed-agents/contracts";
 import type { EventBody } from "@managed-agents/contracts";
-import type { HarnessContext, HarnessDefinition, SqlMigration } from "@managed-agents/harness-api";
+import type { HarnessInitializationContext, HarnessDefinition, TransitionPlan } from "@managed-agents/harness-api";
 import { SessionRuntime } from "../src/index.ts";
 
 interface Config { label: string; settings: { enabled: boolean } }
@@ -12,12 +12,12 @@ interface Options {
   fixed?: boolean;
   labelDefault?: string;
   identity?: { id: string; version: string };
-  migrations?: SqlMigration[];
+  schema?: string[];
 }
-export const migrations: SqlMigration[] = [{ version: 1, statements: [
+export const schema = [
   "CREATE TABLE h_counter (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), count INTEGER NOT NULL)",
   "CREATE TABLE h_messages (event_id TEXT PRIMARY KEY, text TEXT NOT NULL)",
-] }];
+];
 
 /** Test-only host: exposes SQL and deliberately broken harnesses. Never deploy. */
 export class RuntimeFixture {
@@ -27,7 +27,7 @@ export class RuntimeFixture {
   options: Options = {};
   configCalls = 0;
   inputCalls = 0;
-  retained: HarnessContext<Config> | undefined;
+  retained: HarnessInitializationContext<Config> | undefined;
   lateError: string | undefined;
 
   constructor(state: DurableObjectState) { this.state = state; }
@@ -36,7 +36,7 @@ export class RuntimeFixture {
     const definition: HarnessDefinition<Config, EventBody> = {
       identity: this.options.identity ?? { id: "fixture", version: "v1" },
       operations: [],
-      migrations: this.options.migrations ?? migrations,
+      schema: this.options.schema ?? schema,
       parseConfig: value => {
         this.configCalls++;
         if (this.options.config === "reject") throw new ContractException("INVALID_CONFIG", "bad config");
@@ -68,19 +68,23 @@ export class RuntimeFixture {
       },
       handle: (input, ctx) => {
         this.retained = ctx;
-        ctx.sql.exec("INSERT INTO h_messages VALUES (?, ?)", input.eventId, JSON.stringify(input.event.payload)).toArray();
-        ctx.sql.exec("UPDATE h_counter SET count = count + 1").toArray();
         if (input.event.type === "fail" && !this.options.fixed) throw new Error("handler failed");
         if (input.event.type === "mutate") ctx.config.settings.enabled = false;
-        if (input.event.type === "return-value") return 42 as unknown as undefined;
-        if (input.event.type === "reenter") this.runtime!.processNext();
+        if (input.event.type === "return-value") return 42 as unknown as TransitionPlan<unknown>;
+        if (input.event.type === "reenter") this.runtime!.prepareNext();
         if (input.event.type === "late") {
           const promise = Promise.resolve().then(() => {
             try { ctx.sql.exec("UPDATE h_counter SET count = 999"); }
             catch (error) { this.lateError = (error as Error).message; throw error; }
           });
-          return promise as unknown as undefined;
+          return promise as unknown as TransitionPlan<unknown>;
         }
+        return { changes: { eventId: input.eventId, payload: input.event.payload }, operations: [] };
+      },
+      apply(changes, ctx) {
+        const c = changes as { eventId: string; payload: unknown };
+        ctx.sql.exec("INSERT INTO h_messages VALUES (?, ?)", c.eventId, JSON.stringify(c.payload));
+        ctx.sql.exec("UPDATE h_counter SET count = count + 1");
       },
     };
     return new SessionRuntime(this.state.storage, definition);
@@ -105,7 +109,7 @@ export class RuntimeFixture {
         case "start": return Response.json({ ok: true });
         case "initialize": return Response.json(this.runtime.initialize(command.value));
         case "appendInput": return Response.json(this.runtime.appendInput(command.value));
-        case "processNext": return Response.json(this.runtime.processNext());
+        case "processNext": { const p = this.runtime.prepareNext(); return Response.json(p ? this.runtime.commit(p, []) : { processed: false }); }
         case "getSession": return Response.json(this.runtime.getSession());
         case "mutate-read": {
           const info = this.runtime.getSession();
