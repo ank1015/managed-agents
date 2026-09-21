@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { withDeadline, REQUEST_BUDGET_MS } from "../src/deadline.ts";
-import { readLimited } from "../src/gateway.ts";
+import { readLimited } from "../src/http.ts";
 
 test("deadline aborts stalled HTTP body consumption rather than leaving background reads", async () => {
   let cancelled = false;

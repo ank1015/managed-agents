@@ -1,3 +1,4 @@
+import { execution } from "./stack.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { build } from "esbuild";
@@ -11,7 +12,7 @@ test("submission rejection and uncertain acceptance have safe diagnostics, not r
   const records: Record<string, unknown>[] = [];
   t.mock.method(console, "error", (record: Record<string, unknown>) => records.push(record));
   t.mock.method(console, "info", (record: Record<string, unknown>) => records.push(record));
-  const service = new BashService({ EXECUTION_GATEWAY_URL: "https://gateway.test", EXECUTION_GATEWAY_API_KEY: "private-api-key",
+  const service = new BashService({ EXECUTION_GATEWAY_URL: "https://gateway.test",
     LOG_SUCCESS_SAMPLE_RATE: "0", SESSION_ROUTES: JSON.stringify({ "test-v1": "SESSIONS" }),
     SESSIONS: { idFromName: () => ({}), get: () => ({}) },
   });
@@ -20,10 +21,10 @@ test("submission rejection and uncertain acceptance have safe diagnostics, not r
   records.length = 0;
   t.mock.method(globalThis, "fetch", async () => new Response("private invalid upstream body", { status: 502 }));
   const sessionId = "ses_11111111-1111-4111-8111-111111111111";
-  await assert.rejects(service.submit({ destination: { routeKey: "test-v1", sessionId },
+  await assert.rejects(service.submit({ execution: await execution(sessionId), destination: { routeKey: "test-v1", sessionId },
     submission: { operationId: "replay-v1:1:" + "a".repeat(64), submissionId: "replay-v1:1:" + "a".repeat(64),
       request: { provider: "tool-pi-bash", type: "bash", version: "v1", input: {"machineId":"00000000-0000-4000-8000-000000000001","cwd":"/tmp","command":"private command"} } } }));
   assert.equal(records.length, 1); assert.equal(records[0]?.event, "submission_failed");
-  assert.equal(records[0]?.sessionId, sessionId); assert.equal(records[0]?.retryable, true);
+ assert.equal(records[0]?.sessionId, sessionId); assert.equal(records[0]?.retryable, true);
   assert.doesNotMatch(JSON.stringify(records), /private/);
 });
