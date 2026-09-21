@@ -12,10 +12,11 @@
     "logs": { "invocation_logs": false }
   },
   "routes": [{ "pattern": "execution-callbacks.acentric.dev", "custom_domain": true }],
-  "vars": { "CALLBACK_ROUTES": "{\"tool-pi-bash-v1\":\"BASH_EVENTS\",\"tool-pi-read-v1\":\"READ_EVENTS\"}" },
+  "vars": { "CALLBACK_ROUTES": "{\"tool-pi-bash-v1\":\"BASH_EVENTS\",\"tool-pi-read-v1\":\"READ_EVENTS\",\"tool-pi-write-v1\":\"WRITE_EVENTS\"}" },
   "services": [
     { "binding": "BASH_EVENTS", "service": "managed-agents-tool-pi-bash", "entrypoint": "PiBashCallbacks" },
-    { "binding": "READ_EVENTS", "service": "managed-agents-tool-pi-read", "entrypoint": "PiReadCallbacks" }
+    { "binding": "READ_EVENTS", "service": "managed-agents-tool-pi-read", "entrypoint": "PiReadCallbacks" },
+    { "binding": "WRITE_EVENTS", "service": "managed-agents-tool-pi-write", "entrypoint": "PiWriteCallbacks" }
   ],
   "triggers": { "crons": [] }
 }

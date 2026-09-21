@@ -72,3 +72,12 @@ The deployment changed the dedicated user's payload setting to v3 without deleti
 ## Checks
 
 `pnpm --filter @managed-agents/execution-gateway-callback-workers check` covers multiple allowlisted receivers, signature/result tampering, malformed contracts, receiver outage, lost/invalid receipts, large inline payloads and gateway redelivery after process restart, with no router D1/Queue bindings. Bash integration tests add the production tool worker and real session runtime, including early callbacks and the complete deadline. Builds are dry-run only.
+
+## Standalone write receiver
+
+The repository configuration also includes `tool-pi-write-v1 → WRITE_EVENTS`, bound
+to `managed-agents-tool-pi-write/PiWriteCallbacks`. Deploy the write worker before
+redeploying this router with that binding. The write receiver was deployed and tested on 2026-09-21; production harness
+adoption remains separate. See the [test report](../../WRITE_PRODUCTION_TEST.md).
+The router only forwards signed write receipts; it never submits file mutations.
+See the [write worker](../tool-pi-write-workers/README.md) for setup and limits.
