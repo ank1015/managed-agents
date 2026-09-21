@@ -234,9 +234,9 @@ All replies use the outcome envelope `{status:"ok",result}` or
 run with this OS user's permissions; the daemon does not introduce an OS sandbox.
 
 **Migration status:** the daemon, gateway protocol package and single per-machine gateway
-Worker, both harnesses and all four Pi tool adapters now use this breaking,
-unpublished API. Deploy the matching components together and use fresh sessions.
-Historical benchmark outputs describe the previous API.
+Worker, both harnesses and all five tool adapters use this breaking API.
+Deploy the matching components together and use fresh sessions; see the
+[deployment and release guide](../../DEPLOYMENT.md).
 
 ## Configuration
 
@@ -250,7 +250,7 @@ for that foreground invocation. Configuration defaults:
 | `cwd` | Native backend base directory, default user home; requests still supply their own absolute cwd |
 | `python`, `node` | `python3`, `node` |
 | `allow_insecure_loopback` | false |
-| `update_manifest_url` | null; no new release feed has been published yet |
+| `update_manifest_url` | null; set explicitly after publishing the new release feed |
 | `max_processes`, `max_repls` | 64, 8 globally |
 | `max_active_requests` | 16 |
 | `max_journal_requests` | 100000 |
@@ -279,7 +279,17 @@ updating or restarting. Deleting it discards delivery/recovery receipts.
 ## Updates
 
 No release URL from the legacy daemon is reused. Provide the new manifest URL on
-the first update; subsequent `update` commands reuse it. The HTTPS manifest:
+the first update; subsequent `update` commands reuse it. The
+[release Action](../../../.github/workflows/release-execution-daemon.yml) publishes
+raw Linux x86-64, universal macOS and Windows x86-64 executables. After its first
+successful publication, use:
+
+```sh
+process-execution-daemon update --manifest-url https://downloads.acentric.dev/managed-agents/process-execution-daemon/latest/manifest.json
+```
+
+The release feed is separate from the previous daemon's `/latest/manifest.json`.
+Publishing a release does not update any installed machine automatically. The HTTPS manifest:
 
 ```json
 {
@@ -324,13 +334,13 @@ actual update of a temporary binary. The Worker suite launches this real daemon
 against Miniflare over TCP, tests registration/rotation, native tools/REPLs/images,
 duplicate submission, reconnect, crash recovery and credential revocation.
 
-This machine-secret contract is implemented and tested locally, not deployed by
-this change. Deploy the matching gateway, daemon, tool receivers and session
-hosts together, using fresh enrollment and sessions. Historical production
-benchmarks and scripts describe the previous contract and must not be used as
-rollout instructions. The tests use temporary state: they do not install login
-services, replace the existing daemon, deploy Workers, or publish a release.
-Windows/Linux service installation has not been exercised in this change.
+The matching gateway, tools, hosts and agent-api are deployed. A temporary
+foreground daemon verified live registration, connection, execution-secret rotation
+and deletion. The installed daemon and its state were not modified. The release
+Action is prepared but its R2 credentials/first publication are still pending.
+Use fresh enrollment and sessions. Tests use temporary state and do not install
+login services or publish releases. Windows/Linux service installation has not
+been exercised in this rollout.
 
 Local journal diagnostics record native execution duration, first delivery attempt,
 completion/acknowledgement timestamps, attempt count and last delivery error. These
