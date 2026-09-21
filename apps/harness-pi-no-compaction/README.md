@@ -1,8 +1,7 @@
 # Pi no-compaction Worker host
 
-> Source update: execution integration below is implemented and locally tested but
-> not deployed. These instructions describe the current source contract.
-> See [execution setup and rollout](../../packages/session-execution/README.md).
+> Deployed with the machine-secret execution contract on 2026-09-21 UTC.
+> Use fresh enrollment and sessions; see the [deployment record](../../execution/DEPLOYMENT.md).
 
 Hosts [`pi-no-compaction/v1`](../../packages/harness-pi-no-compaction/README.md) in a
 fresh SQLite Durable Object class, `PiNoCompactionSessionV1`. Worker name:

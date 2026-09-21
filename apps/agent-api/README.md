@@ -1,8 +1,7 @@
 # Agent API
 
-> Source update: execution integration below is implemented and locally tested but
-> not deployed. These instructions describe the current source contract.
-> See [execution setup and rollout](../../packages/session-execution/README.md).
+> Deployed with the machine-secret execution contract on 2026-09-21 UTC.
+> Use fresh enrollment and sessions; see the [deployment record](../../execution/DEPLOYMENT.md).
 
 Authenticated backend access to minimal-bash and Pi no-compaction sessions. The API owns authentication, authoritative D1 session routing and creation recovery. Session objects own input admission, transactions, operations and alarms. The API imports shared contracts, never a harness implementation or the session runtime.
 

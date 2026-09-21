@@ -1,8 +1,7 @@
 # Minimal bash Worker
 
-> Source update: execution integration below is implemented and locally tested but
-> not deployed. These instructions describe the current source contract.
-> See [execution setup and rollout](../../packages/session-execution/README.md).
+> Deployed with the machine-secret execution contract on 2026-09-21 UTC.
+> Use fresh enrollment and sessions; see the [deployment record](../../execution/DEPLOYMENT.md).
 
 Hosts one SQLite `MinimalBashSessionV7` Durable Object per `minimal-bash/v7` session. The [harness package](../../packages/harness-minimal-bash/README.md) defines config, history, steering, serial bash and graceful cancellation. This app supplies the driver, private operation-worker bindings and D1 status publication. It has no public callback or session HTTP endpoint. `GET /health` returns `{ "ok": true, "harness": { "id": "minimal-bash", "version": "v7" } }` if invoked through a configured route/binding.
 
