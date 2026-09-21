@@ -56,11 +56,11 @@ export class FakeGateway {
   }
   finish(job: FakeJob, value: JsonValue = writeReceipt(job)) {
     job.status = "succeeded"; job.error = null;
-    job.response = { protocol_version: 4, request_id: job.id, generation_id: generationId, status: "ok", result: value };
+    job.response = { protocol_version: 5, request_id: job.id, generation_id: generationId, status: "ok", result: value };
   }
   fileError(job: FakeJob, code: string, message: string) {
     job.status = "failed"; job.error = null;
-    job.response = { protocol_version: 4, request_id: job.id, generation_id: generationId, status: "error", error: { code, message } };
+    job.response = { protocol_version: 5, request_id: job.id, generation_id: generationId, status: "error", error: { code, message } };
   }
 }
 export type Snapshot = { admittedCompletions: number; results: { event_id: string; payload: string }[];

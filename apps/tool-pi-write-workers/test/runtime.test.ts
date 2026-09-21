@@ -29,7 +29,7 @@ test("actual execution runtime: create, truncate, UTF-8, links, large replacemen
     return JSON.parse(output) as Record<string, JsonValue>;
   }
   async function execute(job: FakeJob) {
-    const response = await rpc({ protocol_version: 4, request_id: job.id, ...job.request });
+    const response = await rpc({ protocol_version: 5, request_id: job.id, ...job.request });
     job.runtimeGenerationId = response.generation_id as string;
     job.response = response; job.error = null; job.status = response.status === "ok" ? "succeeded" : "failed";
   }
@@ -48,7 +48,7 @@ test("actual execution runtime: create, truncate, UTF-8, links, large replacemen
   try {
     await until(async () => {
       assert.equal(server.exitCode, null, stderr);
-      try { const info = await rpc({ protocol_version: 4, request_id: randomUUID(), operation: "runtime.info" }); return info.status === "ok" ? info : undefined; }
+      try { const info = await rpc({ protocol_version: 5, request_id: randomUUID(), operation: "runtime.info" }); return info.status === "ok" ? info : undefined; }
       catch { return undefined; }
     });
     const path = "nested/hello world.txt", content = "नमस्ते 🌍\r\n\0literal $(not executed)\n";

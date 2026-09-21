@@ -74,7 +74,7 @@ LLM outcome limit** and inline session history limits: the standalone worker's
 }
 ```
 
-No precondition is sent. Requires protocol v4 builds supporting
+No precondition is sent. Requires protocol v4 or v5 builds supporting
 `runtime.filesystem.overwrite`; provision a compatible gateway and host runtime
 before use. Unsupported requests surface as errors; there is no shell fallback.
 
@@ -131,8 +131,7 @@ routes fail before gateway submission.
 4. When adopting the tool, bind private `PiWrite` from the caller and allowlist its
    session namespace in the write worker. This change does not modify any harness.
 
-Deployed and tested on the benchmark Mac on 2026-09-21. See the
-[production deployment and test report](../../WRITE_PRODUCTION_TEST.md).
+Deployed and tested on the benchmark Mac on 2026-09-21.
 
 ## Verification
 
@@ -160,3 +159,12 @@ It uses an isolated temporary runtime and files, checks new files, overwrite,
 empty content, UTF-8, parents, symlinks/dangling links, hard-link behavior, replacing
 an old file above 5 MiB, exact 5 MiB content, filesystem errors and old mutation
 replay after a later write. Without the environment variable, this test is skipped.
+
+## Execution protocol compatibility
+
+Callbacks and terminal job replay accept numeric execution protocol versions **4
+and 5**, preserving retained v4 jobs during the v5 rollout. Other versions and
+malformed version fields are rejected; job, runtime generation and tool-specific
+receipt validation still apply. This is independent of the signed webhook's
+`schemaVersion: 3`. Requests use the existing gateway operation envelope, which
+leaves native protocol-version selection to the gateway.

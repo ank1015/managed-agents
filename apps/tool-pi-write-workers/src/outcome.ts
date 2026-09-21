@@ -20,7 +20,7 @@ export async function terminalOutcome(job: Pick<Job, "id" | "status" | "machineI
     return failure(job.id, error.code.slice(0, 200), error.message.slice(0, 1000));
   }
   const response = object(responseValue);
-  if (response.protocol_version !== 4 || response.request_id !== job.id || !job.runtimeGenerationId
+  if ((response.protocol_version !== 4 && response.protocol_version !== 5) || response.request_id !== job.id || !job.runtimeGenerationId
     || response.generation_id !== job.runtimeGenerationId) throw new Error("Invalid file response correlation/version.");
   if (response.status === "error" && job.status === "failed") {
     const error = object(response.error);
