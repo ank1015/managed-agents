@@ -1,9 +1,9 @@
+import { parseToolExecutionSubmission } from "./tool-execution.ts";
+import type { ToolExecutionSubmission } from "./tool-execution.ts";
 import { ContractException } from "./errors.ts";
 import { parseJsonValue } from "./json.ts";
-import { parseProviderSubmission } from "./operation.ts";
-import type { ProviderSubmission } from "./operation.ts";
 import { parseUuid } from "./llm.ts";
-import type { LlmTool, SessionDestination } from "./llm.ts";
+import type { LlmTool } from "./llm.ts";
 import { isAbsoluteMachinePath } from "./pi-bash.ts";
 import { nonemptyString, record } from "./validation.ts";
 
@@ -31,7 +31,7 @@ export const PI_EDIT_TOOL = Object.freeze({
 export type EditReplacement = { oldText: string; newText: string };
 export type EditToolInput = { path: string; edits: EditReplacement[] };
 export type EditInput = EditToolInput & { machineId: string; cwd: string };
-export interface EditSubmission { destination: SessionDestination; submission: ProviderSubmission }
+export type EditSubmission = ToolExecutionSubmission;
 export interface EditWorkerBinding { submit(value: unknown): Promise<unknown> }
 
 export function parseEditToolInput(value: unknown): EditToolInput {
@@ -57,16 +57,7 @@ export function parseEditInput(value: unknown): EditInput {
   if (!isAbsoluteMachinePath(cwd) || cwd.length > 8192) throw new ContractException("INVALID_REQUEST", "cwd must be an absolute machine path of at most 8192 characters.");
   return { machineId: parseUuid(r.machineId), cwd, ...parseEditToolInput({ path: r.path!, edits: r.edits! }) };
 }
-export function parseEditSubmission(value: unknown): EditSubmission {
-  const r = record(parseJsonValue(value), ["destination", "submission"], "edit submission");
-  const d = record(r.destination, ["routeKey", "sessionId"], "destination");
-  const destination = { routeKey: nonemptyString(d.routeKey, "routeKey"), sessionId: nonemptyString(d.sessionId, "sessionId") };
-  const submission = parseProviderSubmission(r.submission);
-  for (const id of [destination.routeKey, destination.sessionId, submission.operationId, submission.submissionId]) {
-    if (id.length > 2048) throw new ContractException("INVALID_REQUEST", "Operation routing identifier is too long.");
-  }
-  return { destination, submission };
-}
+export const parseEditSubmission = parseToolExecutionSubmission;
 
 export type EditFileChange = { path: string; beforeSha256: string; afterSha256: string;
   bytesBefore: number; bytesAfter: number; firstChangedLine?: number };
@@ -74,7 +65,7 @@ export type EditResult = {
   content: { type: "text"; text: string }[];
   isError: boolean;
   details: {
-    gatewayJobId?: string; machineId: string; path: string;
+    requestId?: string; machineId: string; path: string;
     diff?: string; patch?: string; firstChangedLine?: number; diffTruncated?: boolean;
     mutationId?: string; status?: "applied" | "rejected" | "partial"; changesExact?: boolean;
     changes?: EditFileChange[];

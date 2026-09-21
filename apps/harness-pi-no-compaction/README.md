@@ -1,12 +1,11 @@
 # Pi no-compaction Worker host
 
+> Deployed with the machine-secret execution contract on 2026-09-21 UTC.
+> Use fresh enrollment and sessions; see the [deployment record](../../execution/DEPLOYMENT.md).
+
 Hosts [`pi-no-compaction/v1`](../../packages/harness-pi-no-compaction/README.md) in a
 fresh SQLite Durable Object class, `PiNoCompactionSessionV1`. Worker name:
 `managed-agents-harness-pi-no-compaction-v1`; route key: `pi-no-compaction-v1`.
-
-Deployed and tested on 2026-09-21: two OpenAI runs and two Fireworks runs passed
-76 checks on the production Mac. See the [production test record](../../PI_NO_COMPACTION_PRODUCTION_TEST.md)
-for model coverage, callback retry observations and deployment versions.
 
 ## Bindings
 
@@ -20,15 +19,17 @@ for model coverage, callback retry observations and deployment versions.
 | `WRITE` | `managed-agents-tool-pi-write/PiWrite` |
 | `SESSION_DIRECTORY` | Existing session-directory D1 database |
 
-The host needs no provider credentials. The operation workers own their existing
-credentials. Public workers.dev and preview URLs are disabled; GET `/health` is the
+The host validates `config.executionToken` against `config.machineId` and stores it in
+resolved immutable session configuration. Session response projections omit the token. The operation
+workers continue to own their LLM gateway and image-upload credentials. Public workers.dev and preview URLs are disabled; GET `/health` is the
 only HTTP handler. Session commands and completion admission use trusted DO/RPC
 bindings through the API and operation workers.
 
 The API route and all five operation-worker callback destination maps include the
 new namespace. Minimal-bash remains available in its existing namespace. The
-execution callback router already supports all four receiver IDs; no changes are
-needed there.
+per-machine gateway DO routes results directly to tool callbacks. The host discovers
+and pins the machine runtime before its first tool submission; no setup operation
+or harness execution callback is needed.
 
 ## First deployment
 
@@ -41,8 +42,8 @@ The host and operation workers have reciprocal bindings. Deploy in this order:
 4. Deploy agent-api with the new creation/read route and namespace binding.
 
 Do not admit sessions while the bootstrap configuration is active. Do not use the
-bootstrap configuration to update an active deployment. The existing execution
-callback router remains suitable. No existing DO namespace or D1 migration changes.
+bootstrap configuration to update an active deployment. The old execution callback router is not used by these Pi tools. Create fresh sessions for this breaking execution contract and deploy it with the
+matching daemon and gateway. Existing session storage is not migrated.
 
 Example session creation body:
 
@@ -57,6 +58,7 @@ Example session creation body:
     "accountId": "<LLM gateway account UUID>",
     "reasoning": "medium",
     "machineId": "<execution gateway machine UUID>",
+    "executionToken": "<machine execution secret for this machine>",
     "cwd": "/absolute/workspace"
   }
 }
@@ -74,7 +76,17 @@ pnpm --filter @managed-agents/app-harness-pi-no-compaction check
 Includes TypeScript checks, API/Worker RPC tests for both providers, restart tests,
 a full production-worker stack with simulated upstreams (including image upload),
 and a Wrangler dry build. Tests prohibit unexpected external network access.
-Live image interpretation passed for OpenAI Sol, Fireworks GLM 5.3 Flash and
-DeepSeek V4.1 Flash. The production record identifies the tested reasoning tiers;
-other model/tier combinations are not established by those runs. No Fireworks
-image conversion was changed in this implementation.
+Native execution tests also exercise the real gateway and an isolated daemon. Checks do not establish live model quality or availability.
+
+## Immutable execution credentials
+
+The harness requires `config.executionToken` (a machine-bound `me1.…` secret).
+The host supplies it as `execution.token` to the Pi tools and pins the discovered
+runtime before the first tool dispatch. No credential goes into model inputs,
+operation payloads, callback context, transcripts or diagnostics.
+
+There is no top-level creation `execution` field or token-update endpoint/RPC.
+Gateway rotation does not modify stored configuration: future submissions with
+the old token fail, while already accepted callbacks may still complete. Create
+a fresh session with the replacement token. This breaking config contract has
+been verified locally; existing sessions are not migrated.

@@ -21,9 +21,12 @@ test("edit exposes Pi's current schema with original-content replacements and tr
   assert.equal(parseEditInput({ ...input, cwd: "C:\\workspace" }).cwd, "C:\\workspace");
 });
 test("edit submission rejects injected callback routing and excessive transport size", () => {
-  const value = { destination: { routeKey: "test-v1", sessionId: "session" },
+  const value = { execution: { token: `me1.00000000-0000-4000-8000-000000000001.1.${"x".repeat(43)}`, runtimeGeneration: "00000000-0000-4000-8000-000000000002" }, destination: { routeKey: "test-v1", sessionId: "session" },
     submission: { operationId: "op", submissionId: "sub", request: { ...PI_EDIT_OPERATION, input } } };
   assert.deepEqual(parseEditSubmission(value), value);
+  const { execution, ...legacy } = value;
+  assert.throws(() => parseEditSubmission(legacy));
+  assert.throws(() => parseEditSubmission({ ...value, execution: { ...execution, token: "bad token" } }));
   assert.throws(() => parseEditSubmission({ ...value, destination: { ...value.destination, url: "https://bad" } }));
   assert.throws(() => parseEditSubmission({ ...value, destination: { ...value.destination, sessionId: "s".repeat(2049) } }));
   assert.throws(() => parseEditSubmission({ ...value, submission: { ...value.submission,

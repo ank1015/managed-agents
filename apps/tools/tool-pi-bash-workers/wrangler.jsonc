@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "managed-agents-tool-pi-bash",
+  "account_id": "62fc73035acad6807728e4385fc03df0",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false }
+  },
+  // Private service-binding worker; the execution gateway delivers completion RPC.
+  "vars": {
+    "EXECUTION_GATEWAY_URL": "https://execution-api.acentric.dev",
+    "SESSION_ROUTES": "{\"minimal-bash-v7\":\"MINIMAL_BASH_SESSIONS\",\"pi-no-compaction-v1\":\"PI_NO_COMPACTION_SESSIONS\"}"
+  },
+  "triggers": { "crons": [] },
+  // Add each BASH-capable harness's existing namespace here and in SESSION_ROUTES.
+  "durable_objects": { "bindings": [{ "name": "PI_NO_COMPACTION_SESSIONS", "class_name": "PiNoCompactionSessionV1", "script_name": "managed-agents-harness-pi-no-compaction-v1" }, { "name": "MINIMAL_BASH_SESSIONS", "class_name": "MinimalBashSessionV7", "script_name": "managed-agents-harness-minimal-bash-v7" }] }
+}

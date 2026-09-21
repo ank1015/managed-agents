@@ -1,0 +1,13 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "test/*.test.ts",
+    "test/stack.ts",
+    "test/peer.ts"
+  ]
+}

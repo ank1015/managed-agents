@@ -5,3 +5,8 @@ The apply_patch Lark grammar embedded in ../../src/codex-apply-patch.ts
 is copied from codex-rs/core/assets/tools/apply_patch.lark in OpenAI Codex.
 It is distributed under the Apache License, Version 2.0 (see LICENSE).
 The grammar is unchanged; the surrounding TypeScript adapter is new.
+
+The fixture scenarios in ../../../../apps/tools/tool-codex-apply-patch-workers/test/codex-scenarios.ts
+are copied from codex-rs/apply-patch/tests/fixtures/scenarios and repacked as
+TypeScript data. File contents, patches, and expected bytes are unchanged.
+Scenario selection and the test runner are new; see the fixture header for exclusions.

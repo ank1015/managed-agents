@@ -1,8 +1,11 @@
 # Agent API
 
+> Deployed with the machine-secret execution contract on 2026-09-21 UTC.
+> Use fresh enrollment and sessions; see the [deployment record](../../execution/DEPLOYMENT.md).
+
 Authenticated backend access to minimal-bash and Pi no-compaction sessions. The API owns authentication, authoritative D1 session routing and creation recovery. Session objects own input admission, transactions, operations and alarms. The API imports shared contracts, never a harness implementation or the session runtime.
 
-V7 is **deployed on 2026-09-20**; source/configurations and examples below target the live v7 SQLite optimization release. See the [deployment guide](../../DEPLOYMENT.md), [deployment guide](../../DEPLOYMENT.md) and [coordinated rollout](../harness-minimal-bash/README.md#setup-and-rollout). No deployment is performed by checks.
+See the [coordinated rollout](../harness-minimal-bash/README.md#setup-and-rollout). No deployment is performed by checks.
 
 ## Authentication
 
@@ -60,12 +63,12 @@ Create a session:
 {
   "requestId": "create-agent-123",
   "harness": { "id": "minimal-bash", "version": "v7" },
-  "config": { "provider": "openai", "modelId": "gpt-5.6-sol", "accountId": "11111111-1111-4111-8111-111111111111", "machineId": "22222222-2222-4222-8222-222222222222", "cwd": "/workspace" },
+  "config": { "provider": "openai", "modelId": "gpt-5.6-sol", "accountId": "11111111-1111-4111-8111-111111111111", "machineId": "22222222-2222-4222-8222-222222222222", "executionToken": "<machine execution secret>", "cwd": "/workspace" },
   "metadata": { "title": "My coding session", "source": "example" }
 }
 ```
 
-`requestId` is required, nonempty, globally scoped and at most 200 characters. `metadata` is a required JSON object. The source registry contains `minimal-bash/v7` and `pi-no-compaction/v1`. The Pi harness is deployed; see its [configuration](../../packages/harness-pi-no-compaction/README.md) and [production verification](../../PI_NO_COMPACTION_PRODUCTION_TEST.md). Session IDs are opaque `ses_<UUID>` strings. The object's name is the complete public ID within its pinned namespace. See the [minimal-bash config, inputs and read contracts](../harness-minimal-bash/README.md#create-and-use-a-session) for coding sessions.
+`requestId` is required, nonempty, globally scoped and at most 200 characters. `metadata` is a required JSON object. The source registry contains `minimal-bash/v7` and `pi-no-compaction/v1`. See the Pi harness [configuration](../../packages/harness-pi-no-compaction/README.md). Session IDs are opaque `ses_<UUID>` strings. The object's name is the complete public ID within its pinned namespace. See the [minimal-bash config, inputs and read contracts](../harness-minimal-bash/README.md#create-and-use-a-session) for coding sessions.
 
 The list response is `{ "sessions": [{ "sessionId": "ses_<UUID>", "harness": { "id": "minimal-bash", "version": "v7" }, "metadata": { "source": "example" }, "status": "idle" }] }`. Status is one of `initializing`, `initialization_failed`, `idle`, `running`, `failed`, `cancelling`, `cancelled`, `waiting`, or `destroyed`. Creation starts at `initializing`; after DO initialization the API marks it `idle`. Invalid config becomes `initialization_failed`, distinct from a failed run. `destroyed` is reserved for retirement; there is no destroy endpoint yet.
 
@@ -113,14 +116,35 @@ The harness host exposes `sessionRequest(unknown): Promise<SessionReply<unknown>
 
 Creation fault injection exists only in the test host. Production bundles contain no fault switches. Runtime tests independently cover operation recovery and rollback.
 
-`apps/harness-minimal-bash/test` also runs this API with the real coding host, D1 status projection, restart/cancellation tests, and a full production operation-worker/callback/Queue path against fake upstream gateways.
+`apps/harness-minimal-bash/test` also runs this API with the real coding host, D1 status projection, restart/cancellation tests, and the production operation-worker/private execution-callback path against fake upstream gateways.
 
 ## Cloud setup
 
-The production resources are provisioned in APAC. `managed-agents-agent-api` is available at `https://managed-agents-api.acentric.dev`. The harness host has no public session routes. The breaking v2 deployment applied this squashed migration to a fresh directory; checked-in IDs identify that new database and the old database is retained separately. See [deployment records](../../DEPLOYMENT.md). For a future breaking change, provision a replacement deliberately; never assume rerunning an edited migration resets a database.
+The checked-in configuration names the API route `https://managed-agents-api.acentric.dev` and its session-directory D1 database. Verify resource IDs and bindings for the target account before deployment. Harness hosts have no public session routes. For a breaking schema change, provision or migrate a replacement deliberately; rerunning an edited migration does not reset a database.
 
 1. Apply `0001_initial.sql` with `wrangler d1 migrations apply SESSION_DIRECTORY --remote` before deploying code that requires it. A database that already applied an earlier version of 0001 will not acquire the new status fields by rerunning that command. Deliberately recreate/migrate it first; this implementation does not reset any database.
 2. Deploy harness Workers before agent-api when introducing a new namespace binding.
 3. `BACKEND_TOKEN` is an agent-api Worker secret.
 
 For first-time minimal-bash deployment, follow its [binding-cycle and gateway setup instructions](../harness-minimal-bash/README.md#setup-and-rollout). `pnpm check` validates the harness host, operation workers and the API using local tests and dry-run builds, not deployments.
+
+## Harness-owned configuration
+
+Session creation accepts only `requestId`, `harness`, `config`, and `metadata`.
+The API does not define an execution credential shape. Each harness validates its
+configuration during initialization.
+
+Both current coding harnesses require `config.executionToken`, the machine's
+`me1.…` execution secret, alongside `config.machineId`. The host stores it once
+as part of resolved immutable configuration and omits it from session response
+projections. It never enters LLM input or transcripts. The API directory retains
+only the creation-content hash, not configuration or credentials.
+
+There is no top-level `execution` field, credential revision, token-update route,
+or private update command. A changed configuration under the same creation request
+ID conflicts. After gateway rotation, create a new session with the replacement
+token; an existing session continues to hold its initial token.
+
+This breaking source contract is tested locally and requires fresh sessions.
+Historical deployment records describe earlier contracts; this change does not
+deploy or migrate existing sessions.

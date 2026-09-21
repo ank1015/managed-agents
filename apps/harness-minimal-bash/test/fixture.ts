@@ -1,5 +1,6 @@
+import { machineFixture } from "../../../packages/session-execution/test/fixture.ts";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { parseBashSubmission, parseLlmSubmission, parseProviderStatusQuery } from "@managed-agents/contracts";
+import { parseBashSubmission, parseLlmSubmission } from "@managed-agents/contracts";
 import type { OperationOutcome, LlmSubmission } from "@managed-agents/contracts";
 import type { Env } from "../src/types.ts";
 
@@ -22,11 +23,6 @@ export class FakeJobs extends DurableObject<TestEnv> {
     });
     return JSON.stringify({ status: "accepted", jobId: id });
   }
-  get(serialized: string): string {
-    const query = parseProviderStatusQuery(JSON.parse(serialized));
-    const row = this.ctx.storage.sql.exec<Job>("SELECT * FROM jobs WHERE id = ?", query.jobId).toArray()[0];
-    return JSON.stringify(!row ? { status: "missing" } : row.outcome ? { status: "completed", outcome: JSON.parse(row.outcome) } : { status: "pending" });
-  }
   list(): string { return JSON.stringify(this.ctx.storage.sql.exec<Job>("SELECT * FROM jobs ORDER BY rowid").toArray().map(row => ({ ...row, request: JSON.parse(row.serialized) }))); }
   async finish(id: string, serializedOutcome: string, deliver = true): Promise<string> {
     const row = this.ctx.storage.sql.exec<Job>("SELECT * FROM jobs WHERE id = ?", id).one();
@@ -34,20 +30,23 @@ export class FakeJobs extends DurableObject<TestEnv> {
     if (row.outcome && row.outcome !== serializedOutcome) throw new Error("Conflicting fake completion.");
     this.ctx.storage.sql.exec("UPDATE jobs SET outcome = ? WHERE id = ?", serializedOutcome, id);
     if (!deliver) return "{}";
-    const request = JSON.parse(row.serialized) as LlmSubmission;
+    const request = JSON.parse(row.serialized) as LlmSubmission & { execution?: Record<string, unknown> };
     const ns = this.env.MINIMAL_BASH_SESSIONS;
-    return JSON.stringify(await ns.get(ns.idFromName(request.destination.sessionId)).sessionRequest({ action: "acceptCompletion", value: {
-      operationId: request.submission.operationId, submissionId: request.submission.submissionId,
-      provider: request.submission.request.provider, jobId: id, outcome,
-    } }));
+    const completion = { operationId: request.submission.operationId, submissionId: request.submission.submissionId,
+      provider: request.submission.request.provider, jobId: id, outcome };
+    return JSON.stringify(await ns.get(ns.idFromName(request.destination.sessionId)).sessionRequest(request.execution ? {
+      action: "acceptToolCompletion", value: { completion, execution: { runtimeGeneration: request.execution.runtimeGeneration,
+        machineId: (request.submission.request.input as { machineId: string }).machineId } },
+    } : { action: "acceptCompletion", value: completion }));
   }
 }
 export class FakeOperations extends WorkerEntrypoint<TestEnv> {
   async submit(value: unknown): Promise<unknown> { return { result: JSON.parse(await this.env.JOBS.get(this.env.JOBS.idFromName("jobs")).submit(JSON.stringify(value))) }; }
-  get(value: string) { return this.env.JOBS.get(this.env.JOBS.idFromName("jobs")).get(value); }
 }
 export default {
   async fetch(request, env): Promise<Response> {
+    const machine = await machineFixture(request);
+    if (machine) return machine;
     const path = new URL(request.url).pathname;
     const jobs = env.JOBS.get(env.JOBS.idFromName("jobs"));
     if (path === "/jobs") return new Response(await jobs.list());

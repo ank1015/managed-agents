@@ -241,3 +241,21 @@ test("provider mismatches fail before any tool submission", () => {
     assert.equal(f.page().messages.at(-1)?.inContext, false);
   } finally { f.storage.db.close(); }
 });
+
+test("executionToken is required, machine-bound, immutable and never part of model operations", () => {
+  const { executionToken: omitted, ...missing } = config;
+  for (const value of [missing, { ...config, executionToken: "legacy.jwt.token" },
+    { ...config, executionToken: config.executionToken.replace("me1.", "md1.") },
+    { ...config, executionToken: config.executionToken.replace(config.machineId, "33333333-3333-4333-8333-333333333333") }]) {
+    assert.throws(() => parsePiNoCompactionConfig(value));
+  }
+  const f = fixture();
+  try {
+    const stored = JSON.parse(f.storage.db.prepare("SELECT config_json FROM runtime_session").get()!.config_json as string);
+    assert.equal(stored.executionToken, config.executionToken);
+    f.restart();
+    assert.equal((f.runtime.getSession().config as { executionToken: string }).executionToken, config.executionToken);
+    f.send("secret isolation");
+    assert.ok(!JSON.stringify(f.request().input).includes(config.executionToken));
+  } finally { f.storage.db.close(); }
+});

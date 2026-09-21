@@ -1,9 +1,9 @@
+import { parseToolExecutionSubmission } from "./tool-execution.ts";
+import type { ToolExecutionSubmission } from "./tool-execution.ts";
 import { ContractException } from "./errors.ts";
 import { parseJsonValue } from "./json.ts";
-import { parseProviderSubmission } from "./operation.ts";
-import type { ProviderSubmission } from "./operation.ts";
 import { parseUuid } from "./llm.ts";
-import type { LlmTool, SessionDestination } from "./llm.ts";
+import type { LlmTool } from "./llm.ts";
 import { isAbsoluteMachinePath } from "./pi-bash.ts";
 import { nonemptyString, record } from "./validation.ts";
 
@@ -44,7 +44,7 @@ export const CODEX_APPLY_PATCH_TOOL = Object.freeze({
 
 export type ApplyPatchToolInput = string;
 export type ApplyPatchInput = { machineId: string; cwd: string; patch: string };
-export interface ApplyPatchSubmission { destination: SessionDestination; submission: ProviderSubmission }
+export type ApplyPatchSubmission = ToolExecutionSubmission;
 export interface ApplyPatchWorkerBinding { submit(value: unknown): Promise<unknown> }
 
 /** Preserve raw custom-tool input, including whitespace. The daemon validates patch syntax. */
@@ -58,16 +58,7 @@ export function parseApplyPatchInput(value: unknown): ApplyPatchInput {
   if (!isAbsoluteMachinePath(cwd) || cwd.length > 8192) throw new ContractException("INVALID_REQUEST", "cwd must be an absolute machine path of at most 8192 characters.");
   return { machineId: parseUuid(r.machineId), cwd, patch: parseApplyPatchToolInput(r.patch) };
 }
-export function parseApplyPatchSubmission(value: unknown): ApplyPatchSubmission {
-  const r = record(parseJsonValue(value), ["destination", "submission"], "apply_patch submission");
-  const d = record(r.destination, ["routeKey", "sessionId"], "destination");
-  const destination = { routeKey: nonemptyString(d.routeKey, "routeKey"), sessionId: nonemptyString(d.sessionId, "sessionId") };
-  const submission = parseProviderSubmission(r.submission);
-  for (const id of [destination.routeKey, destination.sessionId, submission.operationId, submission.submissionId]) {
-    if (id.length > 2048) throw new ContractException("INVALID_REQUEST", "Operation routing identifier is too long.");
-  }
-  return { destination, submission };
-}
+export const parseApplyPatchSubmission = parseToolExecutionSubmission;
 
 export type ApplyPatchFileChange = {
   kind: "add" | "update" | "delete" | "move";
@@ -81,7 +72,7 @@ export type ApplyPatchResult = {
   content: { type: "text"; text: string }[];
   isError: boolean;
   details: {
-    gatewayJobId?: string; machineId: string;
+    requestId?: string; machineId: string;
     diff?: string; diffTruncated?: boolean; summaryTruncated?: boolean;
     mutationId?: string; status?: "applied" | "rejected" | "partial"; changesExact?: boolean;
     changes?: ApplyPatchFileChange[];

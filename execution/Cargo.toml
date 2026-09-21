@@ -1,0 +1,6 @@
+[workspace]
+members = ["packages/process-execution-core", "apps/process-execution-daemon"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"

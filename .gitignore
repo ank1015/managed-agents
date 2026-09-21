@@ -1,4 +1,5 @@
 node_modules/
+execution/target/
 dist/
 dist-api/
 coverage/
@@ -14,5 +15,3 @@ coverage/
 
 .DS_Store
 *.log
-
-DEPLOYMENT.md

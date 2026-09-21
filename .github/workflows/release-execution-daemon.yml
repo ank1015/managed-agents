@@ -1,0 +1,197 @@
+name: Release execution daemon
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release-execution-daemon.yml
+      - execution/Cargo.toml
+      - execution/Cargo.lock
+      - execution/apps/process-execution-daemon/**
+      - execution/packages/process-execution-core/**
+  workflow_dispatch:
+
+concurrency:
+  group: execution-daemon-releases
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  R2_BUCKET: execution-provider-releases
+  R2_ENDPOINT: https://62fc73035acad6807728e4385fc03df0.r2.cloudflarestorage.com
+  RELEASE_PREFIX: managed-agents/process-execution-daemon
+  DOWNLOAD_BASE_URL: https://downloads.acentric.dev
+
+jobs:
+  check:
+    if: github.ref == 'refs/heads/main'
+    name: Native (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ipython==9.8.0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: execution -> target
+      - run: cargo fmt --manifest-path execution/Cargo.toml --all -- --check
+      - run: cargo clippy --manifest-path execution/Cargo.toml --workspace --all-targets --locked -- -D warnings
+      - name: Full native and daemon suites (POSIX shell fixtures)
+        if: runner.os != 'Windows'
+        run: cargo test --manifest-path execution/Cargo.toml --workspace --locked --no-fail-fast
+      - name: Portable Windows core suites
+        if: runner.os == 'Windows'
+        run: cargo test --manifest-path execution/Cargo.toml --locked -p process-execution-core --lib --test native_execution --test native_filesystem --test native_apply_patch
+      - name: Windows daemon unit and CLI suites
+        if: runner.os == 'Windows'
+        # This single reconnect fixture executes printf/sleep; Unix jobs run it.
+        run: cargo test --manifest-path execution/Cargo.toml --locked -p process-execution-daemon -- --skip reconnect_replays_delivered_results_and_preserves_uuid_process_control
+      - run: node --test execution/apps/process-execution-daemon/release/manifest.test.mjs
+
+  build:
+    needs: check
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-22.04
+          - platform: macos-universal
+            os: macos-14
+          - platform: windows-x86_64
+            os: windows-2022
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: execution -> target
+      - name: Build Linux x86-64 (glibc 2.35 or later)
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --manifest-path execution/Cargo.toml --release --locked -p process-execution-daemon --target x86_64-unknown-linux-gnu
+          execution/target/x86_64-unknown-linux-gnu/release/process-execution-daemon version
+          mkdir -p dist
+          cp execution/target/x86_64-unknown-linux-gnu/release/process-execution-daemon dist/process-execution-daemon-linux-x86_64
+      - name: Build universal macOS executable
+        if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          cargo build --manifest-path execution/Cargo.toml --release --locked -p process-execution-daemon --target x86_64-apple-darwin
+          cargo build --manifest-path execution/Cargo.toml --release --locked -p process-execution-daemon --target aarch64-apple-darwin
+          mkdir -p dist
+          lipo -create \
+            execution/target/x86_64-apple-darwin/release/process-execution-daemon \
+            execution/target/aarch64-apple-darwin/release/process-execution-daemon \
+            -output dist/process-execution-daemon-macos-universal
+          codesign --force --sign - dist/process-execution-daemon-macos-universal
+          codesign --verify --strict dist/process-execution-daemon-macos-universal
+          lipo -verify_arch x86_64 arm64 dist/process-execution-daemon-macos-universal
+          dist/process-execution-daemon-macos-universal version
+      - name: Build Windows x86-64 executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --manifest-path execution/Cargo.toml --release --locked -p process-execution-daemon --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\execution\target\x86_64-pc-windows-msvc\release\process-execution-daemon.exe version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item execution\target\x86_64-pc-windows-msvc\release\process-execution-daemon.exe dist\process-execution-daemon-windows-x86_64.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: execution-daemon-${{ matrix.platform }}
+          path: dist/process-execution-daemon-*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    environment: execution-production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: execution-daemon-*
+          path: dist
+          merge-multiple: true
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable; cargo metadata
+      - name: Create updater manifest and checksums
+        run: |
+          # A rerun gets a new path, never overwriting an immutable release.
+          release_key="$RELEASE_PREFIX/releases/$GITHUB_SHA/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "RELEASE_KEY=$release_key" >> "$GITHUB_ENV"
+          version=$(cargo metadata --manifest-path execution/Cargo.toml --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "process-execution-daemon") | .version')
+          node execution/apps/process-execution-daemon/release/manifest.mjs dist \
+            "$DOWNLOAD_BASE_URL/$release_key/" "$version+git.$GITHUB_SHA.$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT"
+          cp execution/packages/process-execution-core/src/native/filesystem/CODEX-LICENSE dist/CODEX-LICENSE
+          cp execution/apps/process-execution-daemon/release/NOTICE dist/NOTICE
+      - name: Publish and verify immutable release, then promote manifest
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n "$AWS_ACCESS_KEY_ID"
+          test -n "$AWS_SECRET_ACCESS_KEY"
+          aws s3 cp dist/ "s3://$R2_BUCKET/$RELEASE_KEY/" \
+            --endpoint-url "$R2_ENDPOINT" --recursive \
+            --cache-control 'public,max-age=31536000,immutable' --no-progress
+          # Verify the public bytes, not just the manifest or successful uploads.
+          verify_dir=$(mktemp -d "$RUNNER_TEMP/execution-release.XXXXXX")
+          while read -r hash file; do
+            curl --fail --silent --show-error --retry 10 --retry-delay 2 --retry-all-errors \
+              "$DOWNLOAD_BASE_URL/$RELEASE_KEY/$file" --output "$verify_dir/$file"
+          done < dist/checksums.sha256
+          (cd "$verify_dir" && sha256sum --check "$GITHUB_WORKSPACE/dist/checksums.sha256")
+          curl --fail --silent --show-error --retry 10 --retry-delay 2 --retry-all-errors \
+            "$DOWNLOAD_BASE_URL/$RELEASE_KEY/manifest.json" --output "$verify_dir/manifest.json"
+          cmp dist/manifest.json "$verify_dir/manifest.json"
+          # A slower or manually rerun older commit must not replace the latest feed.
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" != "$GITHUB_SHA" ]; then
+            echo 'Published immutable release; main moved, so latest was not changed.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          aws s3 cp dist/manifest.json "s3://$R2_BUCKET/$RELEASE_PREFIX/latest/manifest.json" \
+            --endpoint-url "$R2_ENDPOINT" --content-type application/json \
+            --cache-control 'no-store' --no-progress
+          curl --fail --silent --show-error --retry 10 --retry-delay 2 --retry-all-errors \
+            "$DOWNLOAD_BASE_URL/$RELEASE_PREFIX/latest/manifest.json" --output "$verify_dir/latest.json"
+          cmp dist/manifest.json "$verify_dir/latest.json"
+          echo "Published [$GITHUB_SHA]($DOWNLOAD_BASE_URL/$RELEASE_KEY/manifest.json)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Update feed: $DOWNLOAD_BASE_URL/$RELEASE_PREFIX/latest/manifest.json" >> "$GITHUB_STEP_SUMMARY"

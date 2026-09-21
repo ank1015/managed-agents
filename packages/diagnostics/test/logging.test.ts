@@ -51,8 +51,8 @@ test("sink failure cannot fail application work", () => {
   assert.doesNotThrow(() => logger.success("done", { sessionId }));
 });
 test("all deployed services and bootstrap disable invocation logs without dropping failure samples", async () => {
-  for (const path of ["agent-api", "harness-minimal-bash", "llm-gateway-workers", "tool-pi-bash-workers", "execution-gateway-callback-workers"]) {
-    const config = JSON.parse((await readFile(new URL(`../../../apps/${path}/wrangler.jsonc`, import.meta.url), "utf8")).replace(/^\s*\/\/.*$/gm, ""));
+  for (const path of ["apps/agent-api", "apps/harness-minimal-bash", "apps/llm-gateway-workers", "apps/tools/tool-pi-bash-workers", "execution/apps/execution-gateway"]) {
+    const config = JSON.parse((await readFile(new URL(`../../../${path}/wrangler.jsonc`, import.meta.url), "utf8")).replace(/^\s*\/\/.*$/gm, ""));
     assert.equal(config.observability.enabled, true);
     assert.equal(config.observability.head_sampling_rate, 1);
     assert.equal(config.observability.logs.invocation_logs, false);

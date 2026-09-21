@@ -1,0 +1,6 @@
+{
+  "name": "@managed-agents/session-execution", "version": "0.0.0", "private": true, "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "typecheck": "tsc -p tsconfig.json" },
+  "dependencies": { "@managed-agents/contracts": "workspace:*", "@managed-agents/execution-gateway-protocol": "workspace:*", "@cloudflare/workers-types": "5.20260910.1" }
+}

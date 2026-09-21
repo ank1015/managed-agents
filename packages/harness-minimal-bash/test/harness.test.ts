@@ -10,7 +10,7 @@ import { minimalBashHarness, parseMinimalBashConfig, parseMinimalBashInput, read
 import { appendMessage } from "../src/state.ts";
 import { buildLlmInput } from "../src/openai.ts";
 
-const config = { provider: "openai", modelId: "gpt-5.6-sol", accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", cwd: "/workspace" };
+const config = { provider: "openai", modelId: "gpt-5.6-sol", accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", executionToken: `me1.22222222-2222-4222-8222-222222222222.1.${"x".repeat(43)}`, cwd: "/workspace" };
 class Storage {
   db = new DatabaseSync(":memory:");
   sql = { exec: (query: string, ...bindings: SQLInputValue[]) => {
@@ -380,5 +380,23 @@ test("oversized steering fails cleanly and an old accepted job cannot poison a r
     assert.deepEqual(f.page().messages.map(row => row.message.role), ["user"]);
     assert.equal(f.runtime.getPendingOperations().some(row => row.operationId === old.operationId), false);
     f.complete(assistant()); assert.equal(f.state().status, "idle");
+  } finally { f.storage.db.close(); }
+});
+
+test("executionToken is required, machine-bound, immutable and never part of model operations", () => {
+  const { executionToken: omitted, ...missing } = config;
+  for (const value of [missing, { ...config, executionToken: "legacy.jwt.token" },
+    { ...config, executionToken: config.executionToken.replace("me1.", "md1.") },
+    { ...config, executionToken: config.executionToken.replace(config.machineId, "33333333-3333-4333-8333-333333333333") }]) {
+    assert.throws(() => parseMinimalBashConfig(value));
+  }
+  const f = fixture();
+  try {
+    const stored = JSON.parse(f.storage.db.prepare("SELECT config_json FROM runtime_session").get()!.config_json as string);
+    assert.equal(stored.executionToken, config.executionToken);
+    f.restart();
+    assert.equal((f.runtime.getSession().config as { executionToken: string }).executionToken, config.executionToken);
+    f.send("secret isolation");
+    assert.ok(!JSON.stringify(f.request().input).includes(config.executionToken));
   } finally { f.storage.db.close(); }
 });

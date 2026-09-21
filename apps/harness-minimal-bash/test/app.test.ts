@@ -119,3 +119,32 @@ test("validation, authentication, session isolation, and removed endpoints remai
     assert.equal(deploy.name, "managed-agents-harness-minimal-bash-v7");
   } finally { await s.app.dispose(); }
 });
+
+test("immutable config supplies the token after restart without exposing it to LLMs or session reads", async () => {
+  const s = await startStack();
+  try {
+    const id = await s.create("config-credential");
+    const replacement = config.executionToken.slice(0, -43) + "y".repeat(43);
+    const removed = await s.control("/internal", { sessionId: id, command: { action: "updateExecution", value: { token: replacement, expectedRevision: 1 } } });
+    assert.equal(removed.ok, false);
+    const reinitialized = await s.control("/internal", { sessionId: id, command: { action: "initialize",
+      value: { session: { sessionId: id, harness: { id: "minimal-bash", version: "v7" } }, config: { ...config, executionToken: replacement } } } });
+    assert.equal(reinitialized.ok, true);
+    assert.ok(!JSON.stringify(reinitialized).includes(config.executionToken));
+    await s.app.unsafeEvictDurableObject("host", "MinimalBashSessionV7", { name: id });
+    const view = await s.control("/internal", { sessionId: id, command: { action: "getSession" } });
+    assert.ok(!JSON.stringify(view).includes(config.executionToken));
+    await s.input(id, "prompt");
+    let jobs = await until(() => s.control<Job[]>("/jobs"), j => j.length === 1);
+    assert.ok(!JSON.stringify(jobs[0]!.request).includes(config.executionToken));
+    await s.control("/finish", { id: jobs[0]!.id, outcome: llmResult(["pwd"]) });
+    jobs = await until(() => s.control<Job[]>("/jobs"), j => j.length === 2);
+    const tool = jobs.find(j => j.request.submission.request.provider === "tool-pi-bash")!;
+    assert.equal((tool.request as typeof tool.request & { execution: { token: string } }).execution.token, config.executionToken);
+    assert.ok(!JSON.stringify(tool.request.submission).includes(config.executionToken));
+    await s.control("/finish", { id: tool.id, outcome: bashResult });
+    jobs = await until(() => s.control<Job[]>("/jobs"), j => j.length === 3);
+    assert.ok(!JSON.stringify(jobs[2]!.request).includes(config.executionToken));
+    assert.ok(!JSON.stringify(await s.page(id)).includes(config.executionToken));
+  } finally { await s.app.dispose(); }
+});

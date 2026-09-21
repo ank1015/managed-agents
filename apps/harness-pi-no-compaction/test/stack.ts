@@ -5,7 +5,7 @@ import { build } from "esbuild";
 import { Log, LogLevel, Miniflare } from "miniflare";
 import type { JsonValue, LlmInput, LlmSubmission, OperationOutcome } from "@managed-agents/contracts";
 
-export const config = { provider: "openai", modelId: "gpt-5.6-sol", accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", cwd: "/workspace" };
+export const config = { provider: "openai", modelId: "gpt-5.6-sol", accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", executionToken: `me1.22222222-2222-4222-8222-222222222222.1.${"x".repeat(43)}`, cwd: "/workspace" };
 export const token = "test-backend-token";
 export type Job = { id: string; outcome: string | null; submissions: number; request: LlmSubmission };
 export type Page = { messages: { sequence: number; message: { role: string; tag?: string; content?: unknown[] }; inContext: boolean }[]; nextCursor: number | null;
@@ -22,7 +22,7 @@ export async function startStack(persistPath?: string) {
   const d1Databases = { SESSION_DIRECTORY: "pi-no-compaction-directory" };
   const app = new Miniflare({ log: new Log(LogLevel.ERROR), workers: [
     { ...common, name: "api", script: api, d1Databases, durableObjects: ns, bindings: { BACKEND_TOKEN: token } },
-    { ...common, name: "host", script: host, d1Databases, durableObjects: { PI_NO_COMPACTION_SESSIONS: { className: "PiNoCompactionSessionV1", useSQLite: true } },
+    { ...common, name: "host", script: host, d1Databases, bindings: { EXECUTION_GATEWAY_URL: "https://gateway.test" }, outboundService: { name: "operations" }, durableObjects: { PI_NO_COMPACTION_SESSIONS: { className: "PiNoCompactionSessionV1", useSQLite: true } },
       serviceBindings: { LLM: { name: "operations", entrypoint: "FakeOperations" }, BASH: { name: "operations", entrypoint: "FakeOperations" }, READ: { name: "operations", entrypoint: "FakeOperations" },
         EDIT: { name: "operations", entrypoint: "FakeOperations" }, WRITE: { name: "operations", entrypoint: "FakeOperations" } } },
     { ...common, name: "operations", script: fixture, d1Databases, durableObjects: { ...ns, JOBS: { className: "FakeJobs", useSQLite: true } } },

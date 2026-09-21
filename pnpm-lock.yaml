@@ -138,28 +138,6 @@ importers:
         specifier: 4.116.0
         version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
 
-  apps/execution-gateway-callback-workers:
-    dependencies:
-      '@managed-agents/contracts':
-        specifier: workspace:*
-        version: link:../../packages/contracts
-      '@managed-agents/diagnostics':
-        specifier: workspace:*
-        version: link:../../packages/diagnostics
-    devDependencies:
-      '@cloudflare/workers-types':
-        specifier: 5.20260910.1
-        version: 5.20260910.1
-      esbuild:
-        specifier: 0.27.3
-        version: 0.27.3
-      miniflare:
-        specifier: 4.20260730.0
-        version: 4.20260730.0
-      wrangler:
-        specifier: 4.116.0
-        version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
-
   apps/harness-minimal-bash:
     dependencies:
       '@managed-agents/contracts':
@@ -171,6 +149,9 @@ importers:
       '@managed-agents/harness-minimal-bash':
         specifier: workspace:*
         version: link:../../packages/harness-minimal-bash
+      '@managed-agents/session-execution':
+        specifier: workspace:*
+        version: link:../../packages/session-execution
       '@managed-agents/session-runtime':
         specifier: workspace:*
         version: link:../../packages/session-runtime
@@ -199,6 +180,9 @@ importers:
       '@managed-agents/harness-pi-no-compaction':
         specifier: workspace:*
         version: link:../../packages/harness-pi-no-compaction
+      '@managed-agents/session-execution':
+        specifier: workspace:*
+        version: link:../../packages/session-execution
       '@managed-agents/session-runtime':
         specifier: workspace:*
         version: link:../../packages/session-runtime
@@ -244,24 +228,27 @@ importers:
         specifier: 4.116.0
         version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
 
-  apps/tool-codex-apply-patch-workers:
+  apps/tools/tool-codex-apply-patch-workers:
     dependencies:
       '@managed-agents/contracts':
         specifier: workspace:*
-        version: link:../../packages/contracts
+        version: link:../../../packages/contracts
       '@managed-agents/diagnostics':
         specifier: workspace:*
-        version: link:../../packages/diagnostics
+        version: link:../../../packages/diagnostics
+      '@managed-agents/execution-gateway-protocol':
+        specifier: workspace:*
+        version: link:../../../execution/packages/execution-gateway-protocol
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260910.1
         version: 5.20260910.1
       '@managed-agents/harness-api':
         specifier: workspace:*
-        version: link:../../packages/harness-api
+        version: link:../../../packages/harness-api
       '@managed-agents/session-runtime':
         specifier: workspace:*
-        version: link:../../packages/session-runtime
+        version: link:../../../packages/session-runtime
       esbuild:
         specifier: 0.27.3
         version: 0.27.3
@@ -272,24 +259,27 @@ importers:
         specifier: 4.116.0
         version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
 
-  apps/tool-pi-bash-workers:
+  apps/tools/tool-pi-bash-workers:
     dependencies:
       '@managed-agents/contracts':
         specifier: workspace:*
-        version: link:../../packages/contracts
+        version: link:../../../packages/contracts
       '@managed-agents/diagnostics':
         specifier: workspace:*
-        version: link:../../packages/diagnostics
+        version: link:../../../packages/diagnostics
+      '@managed-agents/execution-gateway-protocol':
+        specifier: workspace:*
+        version: link:../../../execution/packages/execution-gateway-protocol
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260910.1
         version: 5.20260910.1
       '@managed-agents/harness-api':
         specifier: workspace:*
-        version: link:../../packages/harness-api
+        version: link:../../../packages/harness-api
       '@managed-agents/session-runtime':
         specifier: workspace:*
-        version: link:../../packages/session-runtime
+        version: link:../../../packages/session-runtime
       esbuild:
         specifier: 0.27.3
         version: 0.27.3
@@ -300,24 +290,27 @@ importers:
         specifier: 4.116.0
         version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
 
-  apps/tool-pi-edit-workers:
+  apps/tools/tool-pi-edit-workers:
     dependencies:
       '@managed-agents/contracts':
         specifier: workspace:*
-        version: link:../../packages/contracts
+        version: link:../../../packages/contracts
       '@managed-agents/diagnostics':
         specifier: workspace:*
-        version: link:../../packages/diagnostics
+        version: link:../../../packages/diagnostics
+      '@managed-agents/execution-gateway-protocol':
+        specifier: workspace:*
+        version: link:../../../execution/packages/execution-gateway-protocol
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260910.1
         version: 5.20260910.1
       '@managed-agents/harness-api':
         specifier: workspace:*
-        version: link:../../packages/harness-api
+        version: link:../../../packages/harness-api
       '@managed-agents/session-runtime':
         specifier: workspace:*
-        version: link:../../packages/session-runtime
+        version: link:../../../packages/session-runtime
       esbuild:
         specifier: 0.27.3
         version: 0.27.3
@@ -328,14 +321,17 @@ importers:
         specifier: 4.116.0
         version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
 
-  apps/tool-pi-read-workers:
+  apps/tools/tool-pi-read-workers:
     dependencies:
       '@managed-agents/contracts':
         specifier: workspace:*
-        version: link:../../packages/contracts
+        version: link:../../../packages/contracts
       '@managed-agents/diagnostics':
         specifier: workspace:*
-        version: link:../../packages/diagnostics
+        version: link:../../../packages/diagnostics
+      '@managed-agents/execution-gateway-protocol':
+        specifier: workspace:*
+        version: link:../../../execution/packages/execution-gateway-protocol
       bmp-ts:
         specifier: 1.0.9
         version: 1.0.9
@@ -348,10 +344,10 @@ importers:
         version: 5.20260910.1
       '@managed-agents/harness-api':
         specifier: workspace:*
-        version: link:../../packages/harness-api
+        version: link:../../../packages/harness-api
       '@managed-agents/session-runtime':
         specifier: workspace:*
-        version: link:../../packages/session-runtime
+        version: link:../../../packages/session-runtime
       esbuild:
         specifier: 0.27.3
         version: 0.27.3
@@ -362,24 +358,27 @@ importers:
         specifier: 4.116.0
         version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
 
-  apps/tool-pi-write-workers:
+  apps/tools/tool-pi-write-workers:
     dependencies:
       '@managed-agents/contracts':
         specifier: workspace:*
-        version: link:../../packages/contracts
+        version: link:../../../packages/contracts
       '@managed-agents/diagnostics':
         specifier: workspace:*
-        version: link:../../packages/diagnostics
+        version: link:../../../packages/diagnostics
+      '@managed-agents/execution-gateway-protocol':
+        specifier: workspace:*
+        version: link:../../../execution/packages/execution-gateway-protocol
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260910.1
         version: 5.20260910.1
       '@managed-agents/harness-api':
         specifier: workspace:*
-        version: link:../../packages/harness-api
+        version: link:../../../packages/harness-api
       '@managed-agents/session-runtime':
         specifier: workspace:*
-        version: link:../../packages/session-runtime
+        version: link:../../../packages/session-runtime
       esbuild:
         specifier: 0.27.3
         version: 0.27.3
@@ -389,6 +388,27 @@ importers:
       wrangler:
         specifier: 4.116.0
         version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
+
+  execution/apps/execution-gateway:
+    dependencies:
+      '@managed-agents/execution-gateway-protocol':
+        specifier: workspace:*
+        version: link:../../packages/execution-gateway-protocol
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20260910.1
+        version: 5.20260910.1
+      esbuild:
+        specifier: 0.27.3
+        version: 0.27.3
+      miniflare:
+        specifier: 4.20260730.0
+        version: 4.20260730.0
+      wrangler:
+        specifier: 4.116.0
+        version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
+
+  execution/packages/execution-gateway-protocol: {}
 
   packages/contracts: {}
 
@@ -434,6 +454,18 @@ importers:
       '@managed-agents/session-runtime':
         specifier: workspace:*
         version: link:../session-runtime
+
+  packages/session-execution:
+    dependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20260910.1
+        version: 5.20260910.1
+      '@managed-agents/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@managed-agents/execution-gateway-protocol':
+        specifier: workspace:*
+        version: link:../../execution/packages/execution-gateway-protocol
 
   packages/session-runtime:
     dependencies:

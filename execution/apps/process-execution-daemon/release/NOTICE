@@ -1,0 +1,8 @@
+process-execution-daemon embeds a Codex-derived patch parser and matching logic
+in process-execution-core/src/native/filesystem/patch.rs.
+
+Codex
+Copyright 2025 OpenAI
+Licensed under the Apache License, Version 2.0; see CODEX-LICENSE alongside this
+release. The implementation has been adapted for managed-agents' bounded native
+filesystem operations and replay receipts.

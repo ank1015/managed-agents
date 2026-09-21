@@ -4,6 +4,7 @@ import type { PiNoCompactionSessionV1 } from "./session.ts";
 
 export interface Env extends LogSettings {
   PI_NO_COMPACTION_SESSIONS: DurableObjectNamespace<PiNoCompactionSessionV1>;
+  EXECUTION_GATEWAY_URL: string;
   LLM: LlmWorkerBinding;
   BASH: BashWorkerBinding;
   READ: ReadWorkerBinding;

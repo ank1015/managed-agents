@@ -2,9 +2,9 @@
 
 Implements `llm/generate/v1` as a thin adapter to `../llm-providers/apps/llm-gateway`. The gateway owns durable jobs, idempotency/conflict detection, provider execution, retained results and webhook retries. This Worker owns gateway credentials, operation validation, host-generated routing context, signed callback verification and normalized delivery to the session DO.
 
-**Deployed on 2026-09-20.** Its D1 binding, Queue producer/consumer and recovery cron are absent; old resources remain intact and unbound. Bash and execution callbacks are stateless too. See the [deployment guide](../../DEPLOYMENT.md) and [breaking rollout requirements](#deployment-and-breaking-rollout).
-
-Schema-version-2 callbacks carry their signed terminal result directly. The callback path makes no gateway GET. Live bindings and source/configurations target `minimal-bash/v7`. V6 work was drained before switching; its code/data remains intact. Retained older code/data is unchanged. See the [v7 rollout](../../DEPLOYMENT.md).
+This adapter has no D1 database, Queue or recovery cron. Schema-version-2 callbacks
+carry their signed terminal result directly; the callback path makes no gateway GET.
+Session route bindings cover both minimal-bash and Pi no-compaction.
 
 ## Submission
 
@@ -84,29 +84,29 @@ This is at-least-once delivery, not exactly-once provider execution. The gateway
 - `GATEWAY_WEBHOOK_SECRET`: that user's signing secret.
 - Optional `GATEWAY_PREVIOUS_WEBHOOK_SECRET` during rotation.
 - `SESSION_ROUTES`: map allowed route keys to existing DO namespace bindings.
-- Namespace bindings: `MINIMAL_BASH_SESSIONS` for `minimal-bash-v7` in source/configurations and live deployment.
+- Namespace bindings: `MINIMAL_BASH_SESSIONS` for `minimal-bash-v7` and `PI_NO_COMPACTION_SESSIONS` for `pi-no-compaction-v1`.
 
 There is no `LLM_DB`, Queue binding or scheduled handler. The host keeps its existing private `LlmGateway` binding and `parseProviderSubmitReply` adapter. No gateway credentials are added to the host. Public routes are only `GET /health` and the signed callback; health is liveness, not readiness. Workers.dev and preview URLs remain disabled.
 
-## Deployment and breaking rollout
+## Setup and rollout
 
-The deployed inline-result/v6 release requires signed `schemaVersion: 2` events including `response` and `error` on initial delivery and redelivery. Live gateway delivery was verified. The previous notification-only receiver rejects v2. When repeating this rollout elsewhere, pause new traffic and resolve/drain old work before switching namespaces. If v5 callbacks remain, first deploy the inline receiver with the existing v5 binding (a staged config), and redeliver/verify them; do not redirect old callbacks to v6. Then follow the host's [fresh-namespace rollout](../harness-minimal-bash/README.md#setup-and-rollout). There are no new databases, Queues or schema migrations. Keep all old namespace data/code intact.
+Configure the gateway URL/user credentials, callback origin allowlist/user callback
+configuration, and matching session namespace bindings and `SESSION_ROUTES`.
+No LLM D1 database, Queue or migration is required.
 
-The following records the **previous stateful → stateless rollout**; it is not a reason to recreate or re-drain already detached LLM resources:
+The gateway must persist and echo per-job `clientContext`, include it in job detail
+and idempotency conflicts, and sign schema-version-2 callbacks with inline
+`response` and `error`. Context-free and notification-only callbacks are unsupported.
 
-The gateway must first persist and echo per-job `clientContext` for fresh/continuation requests, expose it in job detail, cover it in webhook signatures and include it in idempotency conflicts.
-
-1. Pause new input/resume traffic across all affected harnesses and let existing processing/jobs finish using the old Worker. Drain the old `llm_operations` and `llm_webhook_events` work, outstanding gateway deliveries, and old LLM Queue work. Verify there are no uncertain/replaying submissions, not just no currently running provider jobs.
-2. Detach the old `managed-agents-llm-completions` consumer after draining. Deploy only this Worker with its existing secrets, domain and namespace bindings. Verify its Queue producer/consumer bindings are gone and its cron list is empty; removing code alone is not proof that cloud triggers were removed.
-3. Do **not** drop/delete the old `managed-agents-llm-operations` database or Queue as part of this code change. They can be retained unbound for separately approved cleanup. The removed local migration is not a remote DROP operation.
-4. Restore traffic and verify a real LLM/bash/LLM run, gateway callback `delivered` status, DO transcript/status and duplicate delivery. There is no Worker `delivered_at` to query anymore. Existing drained v5 sessions can continue; no API/harness schema update is necessary.
-
-Do not switch a live context-free operation to this receiver: it cannot infer routing without the old mapping. Do not reuse an in-flight pre-change submission with added context under the same idempotency key: the gateway correctly reports a conflict. Rolling back to the old stateful receiver also requires draining new-context jobs first. Neither direction supports mixed in-flight protocols.
-
-First-time setup only requires gateway URL/user credentials, callback origin allowlist/user callback configuration and existing session namespace bindings. No LLM D1/Queue provisioning or migrations. Keep the same gateway user/origin for outstanding jobs; credential rotation for that same user is supported.
+Before changing callback protocols or session destinations, pause affected traffic
+and drain or reconcile outstanding work. Do not redirect callbacks for one
+namespace into another. Preserve job records and the gateway user/origin for
+outstanding deliveries; credential rotation for that same user is supported.
+Verify callback delivery, durable session admission and duplicate delivery before
+restoring traffic. Local checks do not deploy or remove any remote resources.
 
 ## Checks
 
 Run `pnpm --filter @managed-agents/llm-gateway-workers check` or `pnpm check`. Checks never deploy or call real gateways.
 
-Tests run production RPC, HTTP handlers and SQLite session runtime in workerd with **no LLM D1 or Queue bindings**. They cover early/duplicate/concurrent callbacks, lost submission responses, terminal replay, lost/invalid admission receipts, signature/context tampering, context conflicts, continuation routing, restart with gateway redelivery, fetch/correlation failures, oversized results/error pages and a shared callback deadline. Full-stack minimal-bash tests also use the real stateless LLM Worker with fake gateways. The stateless bash/router release likewise tests without adapter D1/Queue bindings.
+Tests run production RPC, HTTP handlers and SQLite session runtime in workerd with **no LLM D1 or Queue bindings**. They cover early/duplicate/concurrent callbacks, lost submission responses, terminal replay, lost/invalid admission receipts, signature/context tampering, context conflicts, continuation routing, restart with gateway redelivery, fetch/correlation failures, oversized results/error pages and a shared callback deadline. Full-stack minimal-bash tests also use the real stateless LLM Worker with fake gateways.

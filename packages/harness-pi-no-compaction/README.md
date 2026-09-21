@@ -16,6 +16,7 @@ type Config = {
   reasoning?: "low" | "medium" | "high" | "xhigh" | "max"; // Both default to medium.
   maxOutputTokens?: number; // OpenAI: 128000; Fireworks: 32768.
   machineId: string; // Execution gateway machine UUID.
+  executionToken: string; // Required me1 machine secret; must match machineId.
   cwd: string; // Absolute machine path.
 };
 ```
@@ -31,10 +32,14 @@ explicit snapshot of `../llm-providers`; there are no cross-repository runtime i
 The same five reasoning names are accepted for both providers. OpenAI receives
 `reasoning: { effort, summary: "auto" }`; Fireworks receives `reasoning_effort: effort`.
 Values are passed unchanged: a provider may map several names to the same native tier.
-[Production verification](../../PI_NO_COMPACTION_PRODUCTION_TEST.md) passed image
-interpretation and medium/max reasoning for the recorded model/tier combinations.
-Other combinations remain unverified against live providers. Local checks use
+Local checks use
 simulated upstreams and do not establish model quality or availability.
+
+The execution token is stored in the initial immutable configuration and used by
+the host for discovery and private tool RPC only. It is omitted from host session
+responses, model requests and transcripts. There is no token-update API: after
+gateway rotation, use a new session with the replacement token. Already accepted
+work retains its callback delivery authorization.
 
 Every tool receives the configured machine/cwd. They are not model arguments.
 Shell state does not persist between bash calls. Paths follow the existing tool
@@ -180,4 +185,5 @@ out-of-order results, image replay, all-at-once steering, cancellation/resume,
 restart, early callbacks/replay/deduplication, malformed responses, expected tool
 errors, fatal sibling drainage, and payload limits. Host tests use real Worker RPC,
 SQLite DOs and D1. The complete worker-stack test additionally uses production
-LLM/tool/callback code with v5 gateway fixtures and a simulated image upload service.
+LLM/tool/callback code with machine-secret gateway fixtures and a simulated image upload service.
+Native integration tests additionally use the real execution gateway and an isolated daemon.
