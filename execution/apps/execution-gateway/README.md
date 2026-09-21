@@ -66,10 +66,15 @@ sanity-check information; they do not authenticate the secret.
 
 The committed Wrangler configuration uses a new `managed-agents-execution-gateway-v1`
 Worker and a new `Machine` SQLite namespace. It binds the four Pi callback
-entrypoints. Source changes are not a deployment or data migration. Coordinate
+entrypoints and Codex apply_patch. Source changes are not a deployment or data migration. Coordinate
 the daemon, gateway, tool receivers, session hosts and agent API rollout.
 Register fresh machine identities and create fresh sessions. The old UserMachines
 namespace and deployed services are not deleted by this change.
+
+Deploy this Worker directly with Wrangler; GitHub Actions are only for daemon
+releases. First-time bootstrap uses `wrangler.bootstrap.jsonc`: the same
+Worker/namespace, with no public domain and no callback bindings. See the
+[release and rollout guide](../../DEPLOYMENT.md) for secrets and activation order.
 
 ## Submission and callback
 

@@ -5,7 +5,7 @@ callback contracts for the [gateway](../../apps/execution-gateway/README.md).
 Native parameter/result schemas remain owned by
 [process-execution-core](../process-execution-core/README.md).
 
-This is a breaking, unpublished update retaining protocol version 1. Update the
+This is a breaking machine-secret contract retaining protocol version 1. Update the
 daemon, gateway and callback receivers together. Use fresh machine registrations
 and application sessions; user/grant/scope contracts are not accepted.
 

@@ -51,8 +51,8 @@ configured separately.
 - [Execution transport protocol](execution/packages/execution-gateway-protocol/README.md)
 - [Logging policy](packages/diagnostics/README.md)
 
-The machine-secret integration is a breaking source update, locally verified but
-not deployed. Follow the component setup and rollout instructions together; use
-fresh machine enrollment and sessions. Builds do not modify cloud resources or
-the installed daemon. Compaction, hard cancellation and streaming remain future
-work.
+The Worker stack is deployed with the breaking machine-secret integration; see
+[deployment status and setup](execution/DEPLOYMENT.md). Use fresh machine enrollment
+and sessions. The daemon release Action still requires R2 credentials and a first
+publication; the installed daemon was not changed. Builds alone do not deploy.
+Compaction, hard cancellation and streaming remain future work.
