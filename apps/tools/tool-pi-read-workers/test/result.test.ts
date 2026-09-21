@@ -7,7 +7,7 @@ import type { ReadFile } from "../src/result.ts";
 import { detectImageMimeType, bmpToPng } from "../src/images.ts";
 import type { ReadContext } from "../src/context.ts";
 
-const context: ReadContext = { receiver: "tool-pi-read-v1", routeKey: "test-v1", sessionId: "s", operationId: "o", submissionId: "o",
+const context: ReadContext = { routeKey: "test-v1", sessionId: "session", runtimeGeneration: "00000000-0000-4000-8000-000000000002", cwd: "/workspace", operationId: "o", submissionId: "o",
   machineId: "00000000-0000-4000-8000-000000000001", path: "file.txt", offset: null, limit: null };
 function file(text: string): ReadFile {
   return { bytes: Buffer.from(text), path: "/workspace/file.txt", sha256: createHash("sha256").update(text).digest("hex"), modifiedAt: null, isSymlink: false };
@@ -56,13 +56,13 @@ test("50 KiB cap never cuts a line or Unicode character; overlong first line get
 });
 test("raw file results enforce base64, digest, metadata and the inclusive 5 MiB limit", async () => {
   const bytes = Buffer.alloc(5 * 1024 * 1024, 120);
-  const value = { path: "/file", metadata: { size: bytes.length, is_file: true, is_directory: false, is_symlink: false, modified_at_ms: null },
-    data_base64: bytes.toString("base64"), sha256: createHash("sha256").update(bytes).digest("hex") };
+  const value = { type: "bytes", file: { path: "/file", size_bytes: bytes.length, is_symlink: false, modified_at: null,
+    sha256: createHash("sha256").update(bytes).digest("hex") }, data_base64: bytes.toString("base64") };
   const decoded = await decodeFile(value); assert.notEqual(decoded, "too_large");
   assert.equal(decoded === "too_large" ? 0 : decoded.bytes.length, bytes.length);
-  assert.equal(await decodeFile({ ...value, metadata: { ...value.metadata, size: bytes.length + 1 } }), "too_large");
-  for (const patch of [{ sha256: "0".repeat(64) }, { data_base64: "AA=A" }, { data_base64: "eA" },
-    { path: "relative" }, { metadata: { ...value.metadata, is_file: false } }, { metadata: { ...value.metadata, modified_at_ms: "bad" } }]) {
+  assert.equal(await decodeFile({ ...value, file: { ...value.file, size_bytes: bytes.length + 1 } }), "too_large");
+  for (const patch of [{ file: { ...value.file, sha256: "0".repeat(64) } }, { data_base64: "AA=A" }, { data_base64: "eA" },
+    { file: { ...value.file, path: "relative" } }, { type: "text" }, { file: { ...value.file, modified_at: "bad" } }]) {
     await assert.rejects(decodeFile({ ...value, ...patch }));
   }
 });
