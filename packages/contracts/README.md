@@ -1,6 +1,6 @@
 # Contracts
 
-Transport-neutral contracts for managed agent sessions and durable operations (Steps 1 and 2). Import the public API from `@managed-agents/contracts`; the package exports TypeScript source for workspace consumers and bundlers.
+Transport-neutral contracts for managed agent sessions and durable operations. Import the public API from `@managed-agents/contracts`; the package exports TypeScript source for workspace consumers and bundlers.
 
 ## Types
 
@@ -11,11 +11,14 @@ Transport-neutral contracts for managed agent sessions and durable operations (S
 | `api.ts` | Session creation/listing, lifecycle/display statuses, message pagination and private session commands |
 | `input.ts` | Event body, submitted input, admitted envelope, receipt |
 | `errors.ts` | Error codes, wire error shape, `ContractException` |
-| `operation.ts` | Operation definitions/requests, submission/callback correlation, provider submit/status DTOs, outcomes, completion events and receipts |
+| `operation.ts` | Operation definitions/requests, submission/callback correlation, provider submission DTOs, outcomes, completion events and receipts |
 | `llm.ts` | `llm/generate/v1`, typed messages/tools/fresh and continuation inputs, full assistant responses, private LLM worker submission/destination and binding |
 | `pi-bash.ts` | `tool-pi-bash/bash/v1`, Pi model-facing tool definition, command/timeout plus harness-supplied machine/cwd, formatted result/file/truncation details, private worker submission and binding |
 | `pi-read.ts` | `tool-pi-read/read/v1`, Pi path/offset/limit tool schema, host-supplied machine/cwd, bounded text or image URL result, private worker submission and binding |
-| `execution-gateway.ts` | Shared callback routing context, strict v3 inline terminal events, correlated durable admission receipts and callback-only private binding |
+| `pi-write.ts` | Pi write input, result and private submission contract |
+| `pi-edit.ts` | Pi edit input, result and private submission contract |
+| `codex-apply-patch.ts` | Codex freeform patch definition, input, result and private submission contract |
+| `tool-execution.ts` | Host-supplied execution secret/runtime envelope shared by all five tools |
 
 Event types do not establish the authority of the producer. The API must authorize each admission path.
 
@@ -44,7 +47,7 @@ These semantics are implemented by [the session runtime](../session-runtime/READ
 
 `OperationDefinition` contains `{ provider, type, version }`; harness definitions declare an exact allowlist of these combinations. `parseOperationDefinition` validates their shape. `OperationRequest` adds `input`. The provider is a configured logical name. The harness cannot supply a URL, credentials, submission ID, job handle, or callback destination. Request content must be deterministic across replay. The harness returns operations with unique stable keys; the runtime derives an ID from session/harness/input sequence/key. `operationId` and `submissionId` use that same derived value. Distinct keys produce separate jobs; replaying one key must recover the same job.
 
-`ProviderSubmission` carries the request and both correlation IDs. `ProviderStatusQuery` carries the two IDs and the provider's `jobId`. These normalized DTOs are independent of any gateway's HTTP protocol. Matching parsers validate unknown values and reject extra fields, just as the session parsers do.
+`ProviderSubmission` carries the request and both correlation IDs. It is independent of any gateway's HTTP protocol. Its parser validates unknown values and rejects extra fields, just as the session parsers do.
 
 `ProviderSubmitResult` is one of:
 
@@ -54,9 +57,7 @@ These semantics are implemented by [the session runtime](../session-runtime/READ
 
 Transient errors, timeouts, malformed responses, and lost acknowledgements do not prove rejection. They cause retry of the same submission identity. A provider must persist its idempotency mapping for the full recovery horizon, reject changed content for the same identity, and return the original job on resubmission. This contract alone cannot make external file mutations execute exactly once.
 
-`ProviderStatusResult` is `pending`, `completed` with an outcome, or `missing`. It is retained for private worker diagnostics, not runtime polling. The worker owns accepted-job recovery/delivery and must preserve job identities. Missing accepted upstream jobs remain recovery errors, not permission to re-execute them.
-
-`OperationOutcome` is `succeeded` with JSON result, `failed` with `origin: "execution" | "submission"` and `{ code, message, details? }`, or `cancelled`. The runtime creates submission-origin failures from definitive rejection. Callback and completed-job parsers reject submission-origin failures. `cancelled` represents a provider outcome; Step 2 does not implement cancellation delivery or a harness cancellation policy.
+`OperationOutcome` is `succeeded` with JSON result, `failed` with `origin: "execution" | "submission"` and `{ code, message, details? }`, or `cancelled`. The runtime creates submission-origin failures from definitive rejection. Callback and completed-job parsers reject submission-origin failures. `cancelled` represents a provider outcome; the runtime does not implement provider cancellation delivery or a harness cancellation policy.
 
 `OperationCompletion` contains `{ provider, operationId, submissionId, jobId, outcome }`. The hosting service must authenticate the provider and authorize the session before runtime admission. Knowing an ID is not authentication. Runtime admission checks the persisted provider/submission relationship and any known job handle. Unknown operations fail with `OPERATION_NOT_FOUND`; inconsistent correlation or conflicting terminal results fail with `COMPLETION_CONFLICT`. Identical repeated completions return the original receipt with `duplicate: true`.
 
@@ -68,13 +69,15 @@ The [LLM operation worker](../../apps/llm-gateway-workers/README.md) implements 
 
 Its signed gateway callback now requires `schemaVersion: 2` and inline `response`/`error`, normalized by the worker without a result GET. Terminal submission replay still fetches job detail. Public runtime `OperationCompletion` and receipt contracts are unchanged.
 
-The [Pi-style bash worker](../../apps/tool-pi-bash-workers/README.md) implements the same provider contract through `execution.run`. `PI_BASH_TOOL` exposes only `{ command, timeout? }` to the model; `parseBashInput` additionally requires harness-supplied `machineId` and absolute `cwd`. `BashResult` carries bounded Pi-style text, `isError`, execution status and full-output file/truncation metadata. Known command failure/timeout is a completed operation with `isError: true`; uncertain execution is an execution-origin failure, never permission to resubmit automatically.
+The [Pi-style bash worker](../../apps/tools/tool-pi-bash-workers/README.md) now uses `execution.exec` in finished mode. `PI_BASH_TOOL` retains `{ command, timeout? }`; trusted input adds machine/cwd and `parseBashSubmission` requires the shared execution envelope. `BashResult` retains bounded Pi-style text, command status, truncation and full-output artifact metadata, with `details.requestId`, runtime generation and timing. Legacy run/handle/file-hash metadata is removed. Known command failures/timeouts are completed tool errors; uncertain execution remains a failure and never authorizes a fresh command.
 
-The standalone [Pi-style read worker](../../apps/tool-pi-read-workers/README.md) uses `filesystem.read_file`. `PI_READ_TOOL` exposes `{ path, offset?, limit? }`; `parseReadInput` adds host-supplied machine/cwd. `ReadResult` carries bounded text or a Cloudflare Images URL, file/truncation/image metadata and `isError`. Files above 5 MiB and ordinary filesystem errors are completed tool errors. Production harness adoption is intentionally separate.
+The [Pi-style read worker](../../apps/tools/tool-pi-read-workers/README.md) uses the new `filesystem.read` operation in bytes mode. `PI_READ_TOOL` exposes `{ path, offset?, limit? }`; trusted input adds machine/cwd. `ReadResult` carries bounded text or an Images URL, file/truncation/image metadata, `details.requestId` and `isError`. Known file errors and oversized files become tool errors. All four Pi tools share `ToolExecutionSubmission`: destination, a DO-supplied machine execution secret/runtime, and immutable provider submission. Their new private callbacks use the execution-gateway protocol and durable Session DO admission. Production hosts supply this context through the shared session-execution package.
 
-The standalone [Pi-style write worker](../../apps/tool-pi-write-workers/README.md) uses `filesystem.write_file` with `mode: "overwrite"`. `PI_WRITE_TOOL` exposes exactly `{ path, content }`; `parseWriteInput` adds trusted machine/cwd. `WriteResult` preserves Pi's success text and adds `isError` and verified mutation receipt metadata. Empty content is valid. A 5 MiB UTF-8 cap is checked by the worker so oversized content within the generic transport budget completes with a tool error before any write. Runtime filesystem errors are completed tool errors; unknown outcomes remain failed operations and never authorize automatic re-execution. The generic JSON input and LLM/history limits still apply. No production harness adopts write yet.
+The [Pi-style edit worker](../../apps/tools/tool-pi-edit-workers/README.md) uses `filesystem.patch` with `text_replacements`. `PI_EDIT_TOOL` exposes `{ path, edits: [{ oldText, newText }] }`; `parseEditSubmission` requires the shared execution envelope. Results retain Pi-style success/error text and bounded diff/change metadata with `details.requestId`. Structured rejection/partial results become tool errors; uncertain mutation outcomes remain failed operations.
 
-The [shared execution callback worker](../../apps/execution-gateway-callback-workers/README.md) accepts signed v3 inline events with response/error, job/machine/key/generation identity and host-owned context. `ExecutionGatewayContext` requires an allowlisted receiver name; other JSON fields remain tool-owned. Bash requires exact session/operation/machine/timeout routing context. `GatewayEventReceiverBinding.acceptGatewayEvent` uses structured RPC and returns `{ receipt: GatewayEventReceipt }` only after durable DO admission. `parseGatewayEventReply` validates the nested receipt and disposes the RPC wrapper. There is no intermediate delivery database, Queue or early acknowledgement; the gateway owns retries. Parsers establish shape, not authentication. Runtime completion contracts are unchanged.
+The [Pi-style write worker](../../apps/tools/tool-pi-write-workers/README.md) now uses the new execution gateway and native `filesystem.write`. `PI_WRITE_TOOL` still exposes exactly `{ path, content }`; `parseWriteInput` adds trusted machine/cwd. `parseWriteSubmission` requires a separate `execution` envelope carrying the DO-supplied token and runtime generation. `WriteResult` preserves Pi's success text and adds `isError`, `details.requestId` and verified mutation receipt metadata. Empty content is valid. A 5 MiB UTF-8 cap produces a tool error before any write when oversized input fits the generic transport budget. Known filesystem errors become tool errors; uncertain outcomes remain failed operations. Completion uses the new private `acceptExecutionResult` RPC and shared execution-gateway protocol. Production hosts supply this context through the shared session-execution package.
+
+Execution transport events and durable delivery receipts live in the [execution gateway protocol](../../execution/packages/execution-gateway-protocol/README.md). The Machine DO forwards results directly to each tool's private `acceptExecutionResult` binding. The tool validates correlation and acknowledges only after durable Session DO admission; the daemon outbox owns retries. There is no shared HTTP execution callback router.
 
 Structured private submit RPC returns `ProviderSubmitReply = { result: ProviderSubmitResult }`. `parseProviderSubmitReply` validates the nested JSON result and disposes Cloudflare's outer RPC object. The runtime provider interface itself returns the unwrapped `ProviderSubmitResult`. Runtime completion events now contain `{ operationId, provider, jobId, outcome }`, with null jobId only for a definitive rejected submission.
 
@@ -83,3 +86,22 @@ Structured private submit RPC returns `ProviderSubmitReply = { result: ProviderS
 The private session RPC uses structured `SessionCommand` / `SessionReply` objects, not JSON strings. `parseSessionCommand` checks only the dispatch envelope; each action validates its payload at admission. The API checks HTTP syntax/size and the DO validates submitted inputs. Gateway-worker `submit` and execution callback forwarding are structured. The bash diagnostic `get` is removed along with its local operation ledger.
 
 Run `pnpm --filter @managed-agents/contracts check` or root `pnpm check`. Tests use Node's built-in test runner and TypeScript support (Node 22.18+); source and tests are also checked by TypeScript.
+
+
+`CreateSessionRequest` contains only `requestId`, `harness`, `config`, and
+`metadata`. Configuration shape belongs to each harness. The two coding
+harnesses require `config.executionToken` and keep it immutable; the generic
+API has no token field, credential revision or update command.
+
+Private tool submission still carries `execution: {token,runtimeGeneration}`
+outside native input. `parseExecutionToken` validates the machine-secret format.
+`acceptToolCompletion` carries
+`{execution:{machineId,runtimeGeneration},completion}`; the host validates
+execution identity before generic runtime admission. `acceptCompletion` on
+these hosts is reserved for LLM results.
+
+The [Codex apply_patch worker](../../apps/tools/tool-codex-apply-patch-workers/README.md)
+uses the same `ToolExecutionSubmission` envelope and private completion protocol.
+The model supplies raw freeform patch text; trusted input adds machine/cwd.
+It dispatches `filesystem.patch` with `format: "codex"` and returns
+`ApplyPatchResult.details.requestId` (no legacy gateway job metadata).
