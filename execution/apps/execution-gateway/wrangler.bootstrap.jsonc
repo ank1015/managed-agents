@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // FIRST DEPLOYMENT ONLY. No operation can select a callback receiver yet.
+  // Use wrangler.jsonc once all five matching tool callback Workers are deployed.
+  "name": "managed-agents-execution-gateway-v1",
+  "account_id": "62fc73035acad6807728e4385fc03df0",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-30",
+  "workers_dev": false,
+  // Do not take the production domain from the previous gateway during bootstrap.
+  "routes": [],
+  "preview_urls": false,
+  "observability": { "enabled": true, "head_sampling_rate": 1, "logs": { "invocation_logs": false } },
+  "durable_objects": { "bindings": [{ "name": "MACHINES", "class_name": "Machine" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Machine"] }],
+  "services": [],
+  "vars": {
+    "CALLBACK_ROUTES": "{}",
+    "MAX_PENDING_SUBMISSIONS": "8",
+    "MAX_CONCURRENT_DELIVERIES": "2",
+    "MAX_BUFFERED_BYTES": "16777216",
+    "ACCEPT_TIMEOUT_MS": "5000",
+    "CALLBACK_TIMEOUT_MS": "30000"
+  }
+}
