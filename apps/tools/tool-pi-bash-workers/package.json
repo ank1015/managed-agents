@@ -10,7 +10,11 @@
     "test": "node --test test/*.test.ts",
     "check": "pnpm typecheck && pnpm test && pnpm build"
   },
-  "dependencies": { "@managed-agents/diagnostics": "workspace:*", "@managed-agents/contracts": "workspace:*" },
+  "dependencies": {
+    "@managed-agents/diagnostics": "workspace:*",
+    "@managed-agents/contracts": "workspace:*",
+    "@managed-agents/execution-gateway-protocol": "workspace:*"
+  },
   "devDependencies": {
     "@managed-agents/harness-api": "workspace:*",
     "@managed-agents/session-runtime": "workspace:*",
