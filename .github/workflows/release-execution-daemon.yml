@@ -110,7 +110,7 @@ jobs:
             -output dist/process-execution-daemon-macos-universal
           codesign --force --sign - dist/process-execution-daemon-macos-universal
           codesign --verify --strict dist/process-execution-daemon-macos-universal
-          lipo -verify_arch x86_64 arm64 dist/process-execution-daemon-macos-universal
+          lipo dist/process-execution-daemon-macos-universal -verify_arch x86_64 arm64
           dist/process-execution-daemon-macos-universal version
       - name: Build Windows x86-64 executable
         if: runner.os == 'Windows'
