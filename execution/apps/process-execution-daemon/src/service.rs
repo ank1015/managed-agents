@@ -1,0 +1,485 @@
+use crate::Result;
+use std::{
+    ffi::OsString,
+    path::PathBuf,
+    process::{Command, ExitStatus},
+};
+
+pub struct Service {
+    executable: PathBuf,
+    state_dir: PathBuf,
+    config: Option<PathBuf>,
+    environment_path: Option<OsString>,
+}
+
+impl Service {
+    pub fn new(state_dir: PathBuf, config: Option<PathBuf>) -> Result<Self> {
+        let executable = std::env::current_exe()?;
+        #[cfg(not(windows))]
+        let executable = executable.canonicalize()?;
+        Ok(Self {
+            executable,
+            state_dir,
+            config,
+            environment_path: captured_path(),
+        })
+    }
+
+    pub fn connect(&self) -> Result<()> {
+        platform::connect(self)
+    }
+
+    pub fn disconnect(&self) -> Result<()> {
+        platform::disconnect(self)
+    }
+
+    #[cfg(windows)]
+    pub fn from_executable(executable: PathBuf, state_dir: PathBuf) -> Self {
+        Self {
+            executable,
+            state_dir,
+            config: None,
+            environment_path: captured_path(),
+        }
+    }
+
+    fn identifier(&self) -> String {
+        use sha2::{Digest, Sha256};
+        format!(
+            "{:x}",
+            Sha256::digest(self.state_dir.to_string_lossy().as_bytes())
+        )[..12]
+            .to_owned()
+    }
+
+    fn arguments(&self) -> Vec<OsString> {
+        let mut arguments = vec![
+            OsString::from("--state-dir"),
+            self.state_dir.as_os_str().to_owned(),
+            OsString::from("run"),
+        ];
+        if let Some(config) = &self.config {
+            arguments.push(OsString::from("--config"));
+            arguments.push(config.as_os_str().to_owned());
+        }
+        arguments
+    }
+}
+
+fn captured_path() -> Option<OsString> {
+    std::env::var_os("PATH").filter(|value| !value.is_empty())
+}
+
+fn run(mut command: Command, description: &str) -> Result<()> {
+    let status = command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{description} failed with {status}").into())
+    }
+}
+
+fn run_ignoring_failure(mut command: Command) -> Result<ExitStatus> {
+    Ok(command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?)
+}
+
+#[cfg(target_os = "macos")]
+mod platform {
+    use super::*;
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    fn label(service: &Service) -> String {
+        format!("dev.managed-agents.execution.{}", service.identifier())
+    }
+
+    pub fn connect(service: &Service) -> Result<()> {
+        let path = plist_path(service)?;
+        let parent = path.parent().ok_or("LaunchAgents path has no parent")?;
+        fs::create_dir_all(parent)?;
+        let log_dir = service.state_dir.join("logs");
+        fs::create_dir_all(&log_dir)?;
+        let content = plist(service, &log_dir);
+        fs::write(&path, content)?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+
+        let domain = domain();
+        let mut bootout = Command::new("launchctl");
+        bootout.args(["bootout", &format!("{domain}/{}", label(service))]);
+        let _ = run_ignoring_failure(bootout)?;
+        let mut bootstrap = Command::new("launchctl");
+        bootstrap.arg("bootstrap").arg(&domain).arg(&path);
+        run(bootstrap, "launchctl bootstrap")
+    }
+
+    pub fn disconnect(service: &Service) -> Result<()> {
+        let mut command = Command::new("launchctl");
+        command.args(["bootout", &format!("{}/{}", domain(), label(service))]);
+        let _ = run_ignoring_failure(command)?;
+        let path = plist_path(service)?;
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    fn domain() -> String {
+        let output = Command::new("id")
+            .arg("-u")
+            .output()
+            .expect("macOS provides id(1)");
+        format!("gui/{}", String::from_utf8_lossy(&output.stdout).trim())
+    }
+
+    fn plist_path(service: &Service) -> Result<PathBuf> {
+        Ok(directories::BaseDirs::new()
+            .ok_or("cannot locate the user's home directory")?
+            .home_dir()
+            .join("Library/LaunchAgents")
+            .join(format!("{}.plist", label(service))))
+    }
+
+    fn plist(service: &Service, log_dir: &std::path::Path) -> String {
+        let label = label(service);
+        let mut arguments = vec![
+            service
+                .executable
+                .as_os_str()
+                .to_string_lossy()
+                .into_owned(),
+        ];
+        arguments.extend(
+            service
+                .arguments()
+                .into_iter()
+                .map(|value| value.to_string_lossy().into_owned()),
+        );
+        let arguments = arguments
+            .iter()
+            .map(|value| format!("    <string>{}</string>", xml(value)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let environment = service
+            .environment_path
+            .as_ref()
+            .map(|path| {
+                format!(
+                    "  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key><string>{}</string>\n  </dict>\n",
+                    xml(&path.to_string_lossy())
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{label}</string>
+  <key>ProgramArguments</key>
+  <array>
+{arguments}
+  </array>
+{environment}  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>Crashed</key><true/></dict>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>StandardErrorPath</key><string>{}</string>
+</dict>
+</plist>
+"#,
+            xml(&log_dir.join("daemon.log").to_string_lossy())
+        )
+    }
+
+    fn xml(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn plist_escapes_paths_and_preserves_arguments() {
+            let service = Service {
+                executable: PathBuf::from("/tmp/a & b/daemon"),
+                state_dir: PathBuf::from("/tmp/state dir"),
+                config: Some(PathBuf::from("/tmp/<host>.json")),
+                environment_path: Some(OsString::from("/opt/a & b/bin:/usr/bin")),
+            };
+            let value = plist(&service, std::path::Path::new("/tmp/logs"));
+            assert!(value.contains("/tmp/a &amp; b/daemon"));
+            assert!(value.contains("<string>--state-dir</string>"));
+            assert!(value.contains("/tmp/&lt;host&gt;.json"));
+            assert!(value.contains("<key>EnvironmentVariables</key>"));
+            assert!(value.contains("<key>PATH</key><string>/opt/a &amp; b/bin:/usr/bin</string>"));
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod platform {
+    use super::*;
+    use std::fs;
+
+    fn service_name(service: &Service) -> String {
+        format!("managed-agents-execution-{}", service.identifier())
+    }
+
+    pub fn connect(service: &Service) -> Result<()> {
+        let path = unit_path(service)?;
+        fs::create_dir_all(path.parent().ok_or("systemd user path has no parent")?)?;
+        fs::write(&path, unit(service))?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        }
+        systemctl(&["daemon-reload"], "systemctl daemon-reload")?;
+        systemctl(
+            &[
+                "enable",
+                "--now",
+                &format!("{}.service", service_name(service)),
+            ],
+            "systemctl enable",
+        )
+    }
+
+    pub fn disconnect(service: &Service) -> Result<()> {
+        let mut command = Command::new("systemctl");
+        command.args([
+            "--user",
+            "disable",
+            "--now",
+            &format!("{}.service", service_name(service)),
+        ]);
+        let _ = run_ignoring_failure(command)?;
+        Ok(())
+    }
+
+    fn systemctl(arguments: &[&str], description: &str) -> Result<()> {
+        let mut command = Command::new("systemctl");
+        command.arg("--user").args(arguments);
+        run(command, description)
+    }
+
+    fn unit_path(service: &Service) -> Result<PathBuf> {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| directories::BaseDirs::new().map(|base| base.home_dir().join(".config")))
+            .ok_or("cannot locate the user's configuration directory")?;
+        Ok(base
+            .join("systemd/user")
+            .join(format!("{}.service", service_name(service))))
+    }
+
+    fn unit(service: &Service) -> String {
+        let mut command = vec![systemd_quote(&service.executable)];
+        command.extend(service.arguments().iter().map(systemd_quote));
+        let environment = service
+            .environment_path
+            .as_ref()
+            .map(|path| format!("{}\n", systemd_environment("PATH", path)))
+            .unwrap_or_default();
+        format!(
+            "[Unit]\nDescription=Managed agents execution daemon\n\n[Service]\n{environment}ExecStart={}\nRestart=on-failure\nRestartSec=5\nRestartPreventExitStatus=2\n\n[Install]\nWantedBy=default.target\n",
+            command.join(" ")
+        )
+    }
+
+    fn systemd_environment(name: &str, value: impl AsRef<std::ffi::OsStr>) -> String {
+        let value = value.as_ref().to_string_lossy();
+        format!(
+            "Environment=\"{name}={}\"",
+            value
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r")
+                .replace('\t', "\\t")
+                .replace('%', "%%")
+        )
+    }
+
+    fn systemd_quote(value: impl AsRef<std::ffi::OsStr>) -> String {
+        let value = value.as_ref().to_string_lossy();
+        format!(
+            "\"{}\"",
+            value
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r")
+                .replace('\t', "\\t")
+                .replace('$', "$$")
+                .replace('%', "%%")
+        )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn unit_quotes_paths_and_has_safe_restart_policy() {
+            let service = Service {
+                executable: PathBuf::from("/tmp/a b/daemon"),
+                state_dir: PathBuf::from("/tmp/state%dir"),
+                config: None,
+                environment_path: Some(OsString::from("/opt/a b/bin:/tmp/%n:$literal:/usr/bin")),
+            };
+            let value = unit(&service);
+            assert!(value.contains("\"/tmp/a b/daemon\""));
+            assert!(value.contains("\"/tmp/state%%dir\""));
+            assert!(value.contains("Environment=\"PATH=/opt/a b/bin:/tmp/%%n:$literal:/usr/bin\""));
+            assert!(value.contains("RestartPreventExitStatus=2"));
+        }
+    }
+}
+
+#[cfg(windows)]
+mod platform {
+    use super::*;
+    use std::fs;
+
+    fn task_name(service: &Service) -> String {
+        format!("Managed Agents Execution {}", service.identifier())
+    }
+    const RUNNER_NAME: &str = "service-runner.ps1";
+
+    pub fn connect(service: &Service) -> Result<()> {
+        fs::create_dir_all(&service.state_dir)?;
+        let runner = service.state_dir.join(RUNNER_NAME);
+        fs::write(&runner, runner_script(service))?;
+
+        let mut end = Command::new("schtasks.exe");
+        end.args(["/End", "/TN", &task_name(service)]);
+        let _ = run_ignoring_failure(end)?;
+
+        let task_command = task_command(&runner);
+        let mut create = Command::new("schtasks.exe");
+        create.args([
+            "/Create",
+            "/TN",
+            &task_name(service),
+            "/TR",
+            &task_command,
+            "/SC",
+            "ONLOGON",
+            "/RL",
+            "LIMITED",
+            "/F",
+        ]);
+        run(create, "Task Scheduler registration")?;
+        let mut start = Command::new("schtasks.exe");
+        start.args(["/Run", "/TN", &task_name(service)]);
+        run(start, "Task Scheduler start")
+    }
+
+    pub fn disconnect(service: &Service) -> Result<()> {
+        let mut end = Command::new("schtasks.exe");
+        end.args(["/End", "/TN", &task_name(service)]);
+        let _ = run_ignoring_failure(end)?;
+        let mut disable = Command::new("schtasks.exe");
+        disable.args(["/Change", "/TN", &task_name(service), "/Disable"]);
+        let _ = run_ignoring_failure(disable)?;
+        Ok(())
+    }
+
+    fn runner_script(service: &Service) -> String {
+        let mut command = vec![powershell_literal(service.executable.as_os_str())];
+        command.extend(service.arguments().iter().map(powershell_literal));
+        let environment = service
+            .environment_path
+            .as_ref()
+            .map(|path| format!("$env:Path = {}\r\n", powershell_literal(path)))
+            .unwrap_or_default();
+        format!(
+            "{environment}& {}\r\nexit $LASTEXITCODE\r\n",
+            command.join(" ")
+        )
+    }
+
+    fn powershell_literal(value: impl AsRef<std::ffi::OsStr>) -> String {
+        format!("'{}'", value.as_ref().to_string_lossy().replace('\'', "''"))
+    }
+
+    fn task_command(runner: &std::path::Path) -> String {
+        format!(
+            "powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File {}",
+            windows_quote(runner.as_os_str())
+        )
+    }
+
+    fn windows_quote(value: impl AsRef<std::ffi::OsStr>) -> String {
+        let value = value.as_ref().to_string_lossy();
+        let mut quoted = String::from("\"");
+        let mut backslashes = 0;
+        for character in value.chars() {
+            match character {
+                '\\' => backslashes += 1,
+                '"' => {
+                    quoted.push_str(&"\\".repeat(backslashes * 2 + 1));
+                    quoted.push('"');
+                    backslashes = 0;
+                }
+                character => {
+                    quoted.push_str(&"\\".repeat(backslashes));
+                    quoted.push(character);
+                    backslashes = 0;
+                }
+            }
+        }
+        quoted.push_str(&"\\".repeat(backslashes * 2));
+        quoted.push('"');
+        quoted
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn runner_uses_literal_paths_and_preserves_arguments() {
+            let service = Service {
+                executable: PathBuf::from(r"C:\Program Files\Acentric's\daemon.exe"),
+                state_dir: PathBuf::from(r"C:\Users\Test User\state"),
+                config: None,
+                environment_path: Some(OsString::from(r"C:\Tools O'Brien;C:\Windows\System32")),
+            };
+            let value = runner_script(&service);
+            assert!(
+                value.starts_with("$env:Path = 'C:\\Tools O''Brien;C:\\Windows\\System32'\r\n")
+            );
+            assert!(value.contains(r#"& 'C:\Program Files\Acentric''s\daemon.exe'"#));
+            assert!(value.contains("'--state-dir'"));
+            assert!(value.contains(r#"'C:\Users\Test User\state'"#));
+            assert!(value.ends_with("exit $LASTEXITCODE\r\n"));
+        }
+
+        #[test]
+        fn task_action_starts_with_an_unquoted_hidden_powershell() {
+            let value = task_command(std::path::Path::new(
+                r"C:\Users\Test User\state\service-runner.ps1",
+            ));
+            assert!(value.starts_with("powershell.exe "));
+            assert!(value.contains("-WindowStyle Hidden"));
+            assert!(value.ends_with(r#"-File "C:\Users\Test User\state\service-runner.ps1""#));
+        }
+
+        #[test]
+        fn windows_quoting_handles_trailing_slashes_and_quotes() {
+            assert_eq!(windows_quote(r#"C:\state\"#), r#""C:\state\\""#);
+            assert_eq!(windows_quote(r#"a"b"#), r#""a\"b""#);
+        }
+    }
+}
