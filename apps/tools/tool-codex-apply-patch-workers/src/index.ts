@@ -5,10 +5,10 @@ import type { Env } from "./types.ts";
 export class CodexApplyPatch extends WorkerEntrypoint<Env> {
   async submit(value: unknown): Promise<unknown> { return { result: await new ApplyPatchService(this.env).submit(value) }; }
 }
-/** Only the trusted signature-verifying execution callback router may bind this entrypoint. */
+/** Only the execution gateway should bind this private completion entrypoint. */
 export class CodexApplyPatchCallbacks extends WorkerEntrypoint<Env> {
-  async acceptGatewayEvent(value: unknown): Promise<unknown> {
-    return { receipt: await new ApplyPatchService(this.env).acceptGatewayEvent(value) };
+  async acceptExecutionResult(value: unknown) {
+    return new ApplyPatchService(this.env).acceptExecutionResult(value);
   }
 }
 export default {
