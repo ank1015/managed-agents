@@ -34,7 +34,7 @@ export class StorageProfile extends DurableObject {
       return result;
     }
     const config = { provider: "openai", modelId: "gpt-5.6-sol",
-      accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", cwd: "/tmp" };
+      accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", executionToken: `me1.22222222-2222-4222-8222-222222222222.1.${"x".repeat(43)}`, cwd: "/tmp" };
     step("initialize", () => runtime.initialize({ session: { sessionId: "test", harness: minimalBashHarness.identity }, config }));
     function process(name: string) {
       const plan = step(name + " prepare", () => runtime.prepareNext());
