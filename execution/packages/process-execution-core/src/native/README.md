@@ -30,10 +30,11 @@ core.shutdown().await?;
 # }
 ```
 
-The [complete example](examples/run.rs) prints command output through completion:
+The [native execution tests](../../tests/native_execution.rs) exercise process
+output, input, terminal handling and completion:
 
 ```sh
-cargo run -p process-execution-core --example run
+cargo test --manifest-path execution/Cargo.toml -p process-execution-core --test native_execution
 ```
 
 ## Operations

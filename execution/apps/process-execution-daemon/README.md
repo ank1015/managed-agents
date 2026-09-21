@@ -19,39 +19,40 @@ install -m 755 execution/target/release/process-execution-daemon "$HOME/.local/b
 ```
 
 The gateway must first be deployed with an HTTPS route. Registration uses its
-existing trusted-backend API. Read the backend token from stdin (for example, a
+management API. Read the management secret from stdin (for example, a
 private token file); it is used only for registration and is **never saved**:
 
 ```sh
 process-execution-daemon register \
   --gateway-url https://YOUR-GATEWAY-HOST \
-  --user-id YOUR_USER_ID \
-  --name "My Mac" < /path/to/private-backend-token
+  --name "My Mac" < /path/to/private-management-secret
 process-execution-daemon connect
 process-execution-daemon status
 ```
 
-The backend token is privileged across users. End-user distribution should have
-your application backend pre-register the machine and issue a machine token; users
-then use `configure` below. This daemon does not implement a browser login or a
-single-use registration-code flow.
+The management secret can register, rotate and delete machines. Keep it in your
+trusted backend. Registration saves the daemon secret in `credential.json` and
+the separate execution secret in `execution-secret.json`, both in the private
+state directory. Give the execution secret to trusted callers, never the model.
+For distributed enrollment, your backend can register a machine and deliver only
+the daemon secret to the installation; use `configure` below.
 
 Registration persists a generated machine UUID **before** making HTTP calls.
 Identical retries therefore reuse the registration even if a response was lost.
 An optional `--machine-id UUID` pins the initial ID. Retry with the original name
-and user; renaming an existing registration is a gateway management operation.
+and machine ID. Registration cannot rename or resurrect a deleted machine.
 
 To use an already-issued machine credential:
 
 ```sh
 process-execution-daemon configure \
   --gateway-url https://YOUR-GATEWAY-HOST \
-  --user-id YOUR_USER_ID --machine-id MACHINE_UUID < /path/to/private-machine-token
+  --machine-id MACHINE_UUID < /path/to/private-daemon-secret
 process-execution-daemon connect
 ```
 
-A state directory belongs permanently to its gateway/user/machine identity.
-Changing owner requires a separate directory. Both commands must run while its
+A state directory belongs permanently to its gateway/machine identity.
+Changing identity requires a separate directory. Both commands must run while its
 daemon is stopped. Token input is a single line; credentials are never accepted
 as command-line arguments or printed by status.
 
@@ -59,8 +60,8 @@ as command-line arguments or printed by status.
 
 | Command | Behavior |
 | --- | --- |
-| `register` | Register/idempotently recover enrollment and save a machine token |
-| `configure` | Save an existing machine token for this installation |
+| `register` | Register/idempotently recover enrollment and save both machine secrets |
+| `configure` | Save an existing daemon secret for this installation |
 | `connect [--config PATH]` | Install/start a user login service; optionally save the supplied config |
 | `run [--config PATH]` | Run in foreground; Ctrl-C/SIGTERM shuts down native sessions |
 | `disconnect` | Request graceful shutdown and disable login startup; preserve credentials and results |
@@ -105,9 +106,9 @@ and connection replacement stop it instead of competing with a newer connection.
 macOS also requests restart after crash signals; Linux uses restart-on-failure
 with exit code 2 excluded. Windows login-task crash supervision is not provided.
 
-## Gateway connection and credential renewal
+## Gateway connection and credential rotation
 
-The daemon connects to `GET /v1/connect`, completes `welcome` / `hello` / `ready`,
+The daemon connects to `GET /v1/machines/:machineId/connect`, completes `welcome` / `hello` / `ready`,
 and advertises all supported core/control operations. Text heartbeats use the
 DO's hibernation-compatible `execution:ping` / `execution:pong` pair. Missing
 heartbeats trigger reconnect with exponential backoff and jitter.
@@ -116,12 +117,11 @@ The core survives a transport reconnect, preserving exec and REPL sessions.
 A daemon/core restart creates a new runtime generation. Requests addressed to
 another runtime generation are rejected without execution.
 
-Machine tokens renew at roughly 80% of their remaining lifetime through the new
-`POST /v1/machine-token/refresh` endpoint. Renewal requires a currently valid,
-enabled, unrevoked machine token and preserves its user, machine and credential
-version. The new token is saved atomically before reconnecting. The daemon never
-needs the backend token for routine renewal. An expired or revoked credential
-requires backend reissuance through `register` or `configure`.
+Daemon and execution secrets do not expire. Management can rotate either with
+`POST /v1/machines/:machineId/secrets/rotate`. Daemon rotation closes the socket;
+stop the daemon, save the replacement with `configure`, then reconnect.
+Execution rotation affects future submissions, not the daemon connection or
+delivery of already accepted work. There is no token refresh endpoint.
 
 TLS is required. `register` and `configure` support
 `--allow-insecure-loopback` for local tests only; it persists that setting. URLs
@@ -138,7 +138,7 @@ redirects are disabled.
 4. Persist the exact outcome and canonical result/delivery hashes before sending it.
 5. Wake delivery immediately after persistence. Start the acknowledgement timeout
    after the complete payload has flushed, then retry with the same delivery ID
-   and saved return ticket until a matching
+   and saved routing envelope until a matching
    `result_ack` confirms durable receiver admission.
 6. Mark delivered and notify the core through its internal `mark_delivered` hook.
    Retain a replay window, then replace the payload with an identity tombstone.
@@ -152,7 +152,7 @@ number formatting and UTF-16 key ordering, so hashes agree with the gateway.
 A process crash can happen between a side effect and recording its result.
 Previously active journal rows become `DAEMON_RESTARTED` outcomes with
 `uncertain:true`; the daemon **does not rerun them**. Completed results are
-redelivered with their original generation and ticket after restart. Abrupt death
+redelivered with their original generation and routing envelope after restart. Abrupt death
 may leave native work whose final effects are unknown; callers must reconcile
 uncertain work before deliberately issuing replacement operations. Live exec/REPL
 sessions themselves do not survive a core restart.
@@ -160,9 +160,10 @@ sessions themselves do not survive a core restart.
 Permanent nacks and the configurable delivery horizon quarantine the result,
 retaining its payload for inspection/recovery. This consumes the outbox budget;
 capacity rejection happens before new execution. `outbox --retry` retries delivery
-only. It cannot repair an expired signed return ticket; a same-identity resubmission
-with fresh authorization can replace the ticket while that core generation remains
-available. Recovery beyond the signed ticket horizon needs backend intervention.
+only. Routing envelopes have no expiry; retain their gateway signing key until
+outstanding results are drained. Repair unavailable receivers or restore a
+retained signing key before retrying. Deleted machines cannot reconnect, so
+reconcile their pending results before deletion.
 There is no automatic deletion of undelivered/quarantined results. After reconciling
 a permanently failed delivery, `outbox --discard DELIVERY_ID` explicitly clears
 its payload while retaining the no-reexecution tombstone.
@@ -190,7 +191,7 @@ The daemon advertises 13 operations: the eleven native operations above plus:
 | `runtime.capabilities` | `{}` | Core capabilities object |
 
 Requests have no scope field. The runtime owns a global process registry, REPL
-registry, and request ledger. Example request envelope (identity/hash/ticket
+registry, and request ledger. Example request envelope (identity/hash/routing
 placeholders must be replaced by the gateway):
 
 ```json
@@ -210,7 +211,7 @@ placeholders must be replaced by the gateway):
       "completion": {"mode": "yield", "wait_ms": 1000}
     }
   },
-  "returnTicket": "<gateway-issued return ticket>"
+  "routingEnvelope": "<gateway-signed callback destination and correlation data>"
 }
 ```
 
@@ -232,9 +233,9 @@ All replies use the outcome envelope `{status:"ok",result}` or
 `{status:"error",error}` inside a persisted `result` delivery. Native operations
 run with this OS user's permissions; the daemon does not introduce an OS sandbox.
 
-**Migration status:** this is the first pass of a breaking, unpublished API change.
-The gateway protocol package, gateway/user-machine workers, and harness adapters
-still need their separate migration passes before they can use this daemon.
+**Migration status:** the daemon, gateway protocol package and single per-machine gateway
+Worker, both harnesses and all four Pi tool adapters now use this breaking,
+unpublished API. Deploy the matching components together and use fresh sessions.
 Historical benchmark outputs describe the previous API.
 
 ## Configuration
@@ -266,8 +267,8 @@ for that foreground invocation. Configuration defaults:
 | `heartbeat_seconds` | 20; connection is stale after three intervals |
 | `shutdown_seconds` | 15 |
 
-Every 24-hour default is configurable. Match delivery horizons to the gateway's
-return-ticket TTL. File/image and native resource limits retain core defaults;
+Every 24-hour default is configurable. The delivery horizon is a local quarantine
+policy, not an authorization expiry; saved routing envelopes do not expire. File/image and native resource limits retain core defaults;
 transport outcomes are bounded to 8 MiB and WebSocket frames to 8 MiB + 128 KiB.
 A result exceeding the transport bound becomes an explicit uncertain error.
 
@@ -314,23 +315,22 @@ process-execution-daemon update --from /absolute/path/to/new-binary --sha256 VER
 ```sh
 cargo test --manifest-path execution/Cargo.toml --workspace
 cargo clippy --manifest-path execution/Cargo.toml -p process-execution-daemon --all-targets -- -D warnings
-pnpm --filter @managed-agents/execution-gateway-api check
-pnpm --filter @managed-agents/user-machines-workers check
+pnpm --filter @managed-agents/execution-gateway check
 ```
 
 Tests cover durable admission/recovery, capacity, conflicts, tombstone retention,
 canonical hashes, private files, readable CLI output, checksum failure and an
 actual update of a temporary binary. The Worker suite launches this real daemon
-against Miniflare over TCP, tests registration/renewal, native tools/REPLs/images,
+against Miniflare over TCP, tests registration/rotation, native tools/REPLs/images,
 duplicate submission, reconnect, crash recovery and credential revocation.
 
-The daemon is deployed and installed as a LaunchAgent on the test Mac. The real
-Cloudflare path is exercised by the
-[production benchmark](../../../../EXECUTION_GATEWAY_PRODUCTION_BENCHMARK.md). Service installation and
-Windows/Linux runtime behavior have not been exercised on those systems in this
-change. The default tests do not install login services, replace the existing
-machine daemon, deploy Workers, or publish a release. The deployed benchmark receiver provides durable callback admission for these
-tests; existing tool adapters still require migration to this gateway.
+This machine-secret contract is implemented and tested locally, not deployed by
+this change. Deploy the matching gateway, daemon, tool receivers and session
+hosts together, using fresh enrollment and sessions. Historical production
+benchmarks and scripts describe the previous contract and must not be used as
+rollout instructions. The tests use temporary state: they do not install login
+services, replace the existing daemon, deploy Workers, or publish a release.
+Windows/Linux service installation has not been exercised in this change.
 
 Local journal diagnostics record native execution duration, first delivery attempt,
 completion/acknowledgement timestamps, attempt count and last delivery error. These
