@@ -7,33 +7,33 @@ export function object(value: unknown): Record<string, JsonValue> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected an object.");
   return value as Record<string, JsonValue>;
 }
-export function readError(jobId: string, context: ReadContext, code: string, message: string): ReadResult {
+export function readError(requestId: string, context: ReadContext, code: string, message: string): ReadResult {
   return { content: [{ type: "text", text: message }], isError: true,
-    details: { gatewayJobId: jobId, machineId: context.machineId, path: context.path, error: { code, message } } };
+    details: { requestId: requestId, machineId: context.machineId, path: context.path, error: { code, message } } };
 }
-export function fileTooLarge(jobId: string, context: ReadContext): ReadResult {
-  return readError(jobId, context, "READ_FILE_TOO_LARGE", "File is too big to read. The maximum file size is 5 MiB (5,242,880 bytes), including when offset or limit is supplied.");
+export function fileTooLarge(requestId: string, context: ReadContext): ReadResult {
+  return readError(requestId, context, "READ_FILE_TOO_LARGE", "File is too big to read. The maximum file size is 5 MiB (5,242,880 bytes), including when offset or limit is supplied.");
 }
 export type ReadFile = { bytes: Uint8Array; path: string; sha256: string; modifiedAt: number | null; isSymlink: boolean };
 export async function decodeFile(value: unknown): Promise<ReadFile | "too_large"> {
-  const r = object(value), metadata = object(r.metadata);
-  if (typeof r.path !== "string" || r.path.length > 16384 || !isAbsoluteMachinePath(r.path)
-    || typeof r.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(r.sha256) || typeof r.data_base64 !== "string"
-    || metadata.is_file !== true || metadata.is_directory !== false || typeof metadata.is_symlink !== "boolean"
-    || typeof metadata.size !== "number" || !Number.isSafeInteger(metadata.size) || metadata.size < 0
-    || (metadata.modified_at_ms !== null && (typeof metadata.modified_at_ms !== "number" || !Number.isSafeInteger(metadata.modified_at_ms)))) {
+  const r = object(value), metadata = object(r.file);
+  if (r.type !== "bytes" || typeof metadata.path !== "string" || metadata.path.length > 16384 || !isAbsoluteMachinePath(metadata.path)
+    || typeof metadata.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(metadata.sha256) || typeof r.data_base64 !== "string"
+    || typeof metadata.is_symlink !== "boolean" || typeof metadata.size_bytes !== "number" || !Number.isSafeInteger(metadata.size_bytes) || metadata.size_bytes < 0
+    || (metadata.modified_at !== null && (typeof metadata.modified_at !== "number" || !Number.isSafeInteger(metadata.modified_at)))) {
     throw new Error("Malformed filesystem read result.");
   }
-  if (r.data_base64.length > Math.ceil(PI_READ_MAX_FILE_BYTES / 3) * 4 || metadata.size > PI_READ_MAX_FILE_BYTES) return "too_large";
+  if (r.data_base64.length > Math.ceil(PI_READ_MAX_FILE_BYTES / 3) * 4 || metadata.size_bytes > PI_READ_MAX_FILE_BYTES) return "too_large";
   const bytes = Buffer.from(r.data_base64, "base64");
   if (bytes.toString("base64") !== r.data_base64) throw new Error("Invalid padded base64 file bytes.");
   if (bytes.length > PI_READ_MAX_FILE_BYTES) return "too_large";
   const digest = Buffer.from(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes))).toString("hex");
-  if (digest !== r.sha256) throw new Error("File digest does not match returned bytes.");
-  return { bytes, path: r.path, sha256: digest, modifiedAt: metadata.modified_at_ms, isSymlink: metadata.is_symlink };
+  if (digest !== metadata.sha256 || bytes.length !== metadata.size_bytes) throw new Error("File digest or size does not match returned bytes.");
+  return { bytes, path: metadata.path, sha256: digest, modifiedAt: metadata.modified_at, isSymlink: metadata.is_symlink };
 }
-export function fileDetails(file: ReadFile, jobId: string, context: ReadContext): ReadResult["details"] {
-  return { gatewayJobId: jobId, machineId: context.machineId, path: file.path,
+
+export function fileDetails(file: ReadFile, requestId: string, context: ReadContext): ReadResult["details"] {
+  return { requestId: requestId, machineId: context.machineId, path: file.path,
     file: { sizeBytes: file.bytes.length, sha256: file.sha256, modifiedAt: file.modifiedAt, isSymlink: file.isSymlink } };
 }
 
@@ -60,14 +60,14 @@ export function truncateHead(content: string): ReadTruncation {
   }
   return { ...base, content: output.join("\n"), truncated: true, truncatedBy, outputLines: output.length, outputBytes, firstLineExceedsLimit: false };
 }
-export function formatText(file: ReadFile, jobId: string, context: ReadContext): ReadResult {
+export function formatText(file: ReadFile, requestId: string, context: ReadContext): ReadResult {
   // Replacement decoding and split preserve Pi's empty-file, CRLF, BOM and final-newline behavior.
   const allLines = Buffer.from(file.bytes).toString("utf8").split("\n"), start = (context.offset ?? 1) - 1;
-  if (start >= allLines.length) return readError(jobId, context, "READ_OFFSET_OUT_OF_BOUNDS", `Offset ${context.offset} is beyond end of file (${allLines.length} lines total)`);
+  if (start >= allLines.length) return readError(requestId, context, "READ_OFFSET_OUT_OF_BOUNDS", `Offset ${context.offset} is beyond end of file (${allLines.length} lines total)`);
   const count = Math.min(context.limit ?? allLines.length, allLines.length - start);
   const truncation = truncateHead(allLines.slice(start, start + count).join("\n"));
   let text = truncation.content;
-  const details = fileDetails(file, jobId, context);
+  const details = fileDetails(file, requestId, context);
   if (truncation.firstLineExceedsLimit) {
     text = `[Line ${start + 1} is ${formatSize(Buffer.byteLength(allLines[start]!))}, exceeds ${formatSize(PI_READ_MAX_BYTES)} limit. Use bash to read a bounded portion of this line.]`;
     details.truncation = truncation;

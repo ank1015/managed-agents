@@ -80,7 +80,7 @@ class Images {
     this.signal = signal;
   }
   async request(path: string, form?: FormData): Promise<ApiReply> {
-    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 7000);
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20_000);
     const signal = AbortSignal.any([this.signal, controller.signal]);
     try {
       signal.throwIfAborted();
@@ -141,23 +141,23 @@ class Images {
   }
 }
 
-export async function formatImage(file: ReadFile, originalMimeType: ImageMime, jobId: string, context: ReadContext,
+export async function formatImage(file: ReadFile, originalMimeType: ImageMime, requestId: string, context: ReadContext,
   env: Env, signal: AbortSignal): Promise<ReadResult> {
   let bytes = file.bytes, mimeType: string = originalMimeType;
   if (originalMimeType === "image/bmp") {
     try { bytes = bmpToPng(bytes); mimeType = "image/png"; }
-    catch { return readError(jobId, context, "READ_IMAGE_INVALID", "BMP could not be converted to PNG. Supported BMP images must have a valid Windows bitmap header and at most 4 megapixels."); }
+    catch { return readError(requestId, context, "READ_IMAGE_INVALID", "BMP could not be converted to PNG. Supported BMP images must have a valid Windows bitmap header and at most 4 megapixels."); }
   }
   signal.throwIfAborted();
-  const id = `pi-read-v1-${await sha256(JSON.stringify([context.operationId, jobId, file.sha256]))}`;
+  const id = `pi-read-v1-${await sha256(JSON.stringify([context.operationId, requestId, file.sha256]))}`;
   const uploadSha256 = Buffer.from(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes))).toString("hex");
   let url: string;
   try { url = await new Images(env, signal).upload(id, bytes, mimeType, { source: "tool-pi-read-v1", sha256: file.sha256, uploadSha256 }); }
   catch (error) {
-    if (error instanceof ImageRejected) return readError(jobId, context, "READ_IMAGE_REJECTED", error.message);
+    if (error instanceof ImageRejected) return readError(requestId, context, "READ_IMAGE_REJECTED", error.message);
     throw error;
   }
   return { content: [{ type: "text", text: `Read image file [${mimeType}]${originalMimeType === "image/bmp" ? "\n[Image converted from image/bmp to image/png.]" : ""}` },
       { type: "image", url }], isError: false,
-    details: { ...fileDetails(file, jobId, context), image: { id, url, mimeType, originalMimeType } } };
+    details: { ...fileDetails(file, requestId, context), image: { id, url, mimeType, originalMimeType } } };
 }
