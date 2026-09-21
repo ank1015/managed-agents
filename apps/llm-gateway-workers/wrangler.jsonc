@@ -14,10 +14,10 @@
   "routes": [{ "pattern": "llm-callbacks.acentric.dev", "custom_domain": true }],
   "vars": {
     "GATEWAY_URL": "https://gateway.acentric.dev",
-    "SESSION_ROUTES": "{\"minimal-bash-v7\":\"MINIMAL_BASH_SESSIONS\"}"
+    "SESSION_ROUTES": "{\"minimal-bash-v7\":\"MINIMAL_BASH_SESSIONS\",\"pi-no-compaction-v1\":\"PI_NO_COMPACTION_SESSIONS\"}"
   },
   // Explicitly clear the old recovery schedule when this drained release is deployed.
   "triggers": { "crons": [] },
   // Add each LLM-capable harness's existing namespace here and in SESSION_ROUTES.
-  "durable_objects": { "bindings": [{ "name": "MINIMAL_BASH_SESSIONS", "class_name": "MinimalBashSessionV7", "script_name": "managed-agents-harness-minimal-bash-v7" }] }
+  "durable_objects": { "bindings": [{ "name": "PI_NO_COMPACTION_SESSIONS", "class_name": "PiNoCompactionSessionV1", "script_name": "managed-agents-harness-pi-no-compaction-v1" }, { "name": "MINIMAL_BASH_SESSIONS", "class_name": "MinimalBashSessionV7", "script_name": "managed-agents-harness-minimal-bash-v7" }] }
 }
