@@ -16,7 +16,7 @@ test("raw custom input preserves text, leaves syntax errors to the daemon and se
   assert.ok("tools" in request); assert.deepEqual(request.tools, [CODEX_APPLY_PATCH_TOOL]);
 });
 test("submission rejects injected callback routing and excessive transport size", () => {
-  const value = { destination: { routeKey: "test-v1", sessionId: "session" },
+  const value = { execution: { token: `me1.${input.machineId}.1.${"x".repeat(43)}`, runtimeGeneration: "00000000-0000-4000-8000-000000000002" }, destination: { routeKey: "test-v1", sessionId: "session" },
     submission: { operationId: "op", submissionId: "sub", request: { ...CODEX_APPLY_PATCH_OPERATION, input } } };
   assert.deepEqual(parseApplyPatchSubmission(value), value);
   assert.throws(() => parseApplyPatchSubmission({ ...value, destination: { ...value.destination, url: "https://bad" } }));
