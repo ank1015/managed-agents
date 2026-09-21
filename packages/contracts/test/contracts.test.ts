@@ -4,6 +4,7 @@ import {
   ContractException,
   jsonEquals,
   parseCreateSessionRequest,
+  parseSessionCommand,
   parseEventBody,
   parseInitializeSessionRequest,
   parseJsonValue,
@@ -67,6 +68,8 @@ test("session creation requires object metadata and preserves arbitrary JSON fie
   const value = { requestId: "create-1", harness: { id: "fixture", version: "v1" },
     config: {}, metadata: { title: "Example", tags: ["one", "two"], nested: { pinned: true } } };
   assert.deepEqual(parseCreateSessionRequest(value), value);
+  rejects("INVALID_REQUEST", () => parseCreateSessionRequest({ ...value, execution: { token: "removed" } }));
+  rejects("INVALID_REQUEST", () => parseSessionCommand({ action: "updateExecution", value: { token: "removed" } }));
   for (const metadata of [undefined, null, [], "metadata", 1]) {
     rejects("INVALID_REQUEST", () => parseCreateSessionRequest({ ...value, metadata }));
   }

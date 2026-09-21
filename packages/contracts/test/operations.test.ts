@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   parseOperationDefinition, parseOperationRequest, parseOperationOutcome, parseOperationCompletion,
-  parseProviderSubmitResult, parseProviderStatusResult, ContractException,
-  parseProviderSubmission, parseProviderStatusQuery,
+  parseProviderSubmitResult, ContractException,
+  parseProviderSubmission,
 } from "../src/index.ts";
 
 test("operation declarations require an exact provider/type/version and exclude input or transport", () => {
@@ -25,7 +25,7 @@ test("operation requests require immutable-versioned JSON content and reject tra
   ]) assert.throws(() => parseOperationRequest(bad), ContractException);
 });
 
-test("terminal outcomes, rejection and pending status are separate strict variants", () => {
+test("terminal outcomes and submission results are separate strict variants", () => {
   for (const value of [
     { status: "succeeded", result: null },
     { status: "failed", origin: "execution", error: { code: "ERROR", message: "failed", details: { attempt: 1 } } },
@@ -41,11 +41,7 @@ test("terminal outcomes, rejection and pending status are separate strict varian
     { status: "completed", jobId: "job", outcome: { status: "succeeded", result: 1 } },
     { status: "rejected", error: { code: "no", message: "no" } },
   ]) assert.deepEqual(parseProviderSubmitResult(value), value);
-  for (const value of [{ status: "pending" }, { status: "missing" }, { status: "completed", outcome: { status: "cancelled" } }]) {
-    assert.deepEqual(parseProviderStatusResult(value), value);
-  }
   assert.throws(() => parseProviderSubmitResult({ status: "accepted", jobId: "job", outcome: null }));
-  assert.throws(() => parseProviderStatusResult({ status: "missing", outcome: null }));
   assert.throws(() => parseProviderSubmitResult({ status: "accepted", jobId: "" }));
 });
 
@@ -62,12 +58,8 @@ test("completion admission requires the complete provider/submission/job correla
   } }), /accepted provider job/);
 });
 
-test("provider submissions and status queries preserve correlation and reject extra fields", () => {
+test("provider submissions preserve correlation and reject extra fields", () => {
   const submission = { operationId: "op", submissionId: "stable", request: { provider: "echo", type: "echo", version: "v1", input: null } };
-  const query = { operationId: "op", submissionId: "stable", jobId: "job" };
   assert.deepEqual(parseProviderSubmission(submission), submission);
-  assert.deepEqual(parseProviderStatusQuery(query), query);
   assert.throws(() => parseProviderSubmission({ ...submission, callbackUrl: "https://other/" }));
-  assert.throws(() => parseProviderStatusQuery({ ...query, submissionId: "" }));
-  assert.throws(() => parseProviderStatusQuery({ ...query, input: null }));
 });
