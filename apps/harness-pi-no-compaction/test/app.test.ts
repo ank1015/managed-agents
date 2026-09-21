@@ -99,3 +99,62 @@ test("new route validates configuration, isolates sessions and keeps host privat
     assert.equal(deploy.durable_objects.bindings[0].class_name, "PiNoCompactionSessionV1");
   } finally { await s.app.dispose(); }
 });
+
+test("tool completion admission checks the stored machine, runtime and operation", async () => {
+  const s = await startStack();
+  try {
+    const id = await s.create("completion-machine"); await s.input(id, "prompt");
+    let jobs = await until(() => s.control<Job[]>("/jobs"), j => j.length === 1);
+    await s.control("/finish", { id: jobs[0]!.id, outcome: response("openai") });
+    jobs = await until(() => s.control<Job[]>("/jobs"), j => j.length === 4);
+    const bash = job(jobs, "tool-pi-bash"), raw = bash.request as typeof bash.request & { execution: { runtimeGeneration: string } };
+    const identity = { machineId: config.machineId, runtimeGeneration: raw.execution.runtimeGeneration };
+    const completion = { provider: "tool-pi-bash", operationId: raw.submission.operationId, submissionId: raw.submission.submissionId, jobId: bash.id, outcome: bashResult };
+    for (const execution of [{ ...identity, userId: "bob" }, { ...identity, machineId: "00000000-0000-4000-8000-000000000001" },
+      { ...identity, runtimeGeneration: "00000000-0000-4000-8000-000000000004" }]) {
+      const reply = await s.control("/internal", { sessionId: id, command: { action: "acceptToolCompletion", value: { execution, completion } } });
+      assert.equal(reply.ok, false); assert.equal((reply.error as { code: string }).code, "COMPLETION_CONFLICT");
+    }
+    // Another session on the same runtime still cannot admit this operation.
+    const other = await s.create("completion-other"); await s.input(other, "prompt");
+    jobs = await until(() => s.control<Job[]>("/jobs"), j => j.length === 5);
+    await s.control("/finish", { id: jobs[4]!.id, outcome: response("openai") });
+    await until(() => s.control<Job[]>("/jobs"), j => j.length === 8);
+    const foreign = await s.control("/internal", { sessionId: other, command: { action: "acceptToolCompletion", value: { execution: identity, completion } } });
+    assert.equal(foreign.ok, false);
+    assert.equal((await s.page(other)).state.activeToolCount, 3);
+    assert.equal((await s.control("/internal", { sessionId: id, command: { action: "acceptCompletion", value: completion } })).ok, false);
+    assert.equal((await s.page(id)).state.activeToolCount, 3);
+    assert.equal((await s.control("/finish", { id: bash.id, outcome: bashResult })).ok, true);
+    await until(() => s.page(id), p => p.state.activeToolCount === 2);
+  } finally { await s.app.dispose(); }
+});
+
+test("immutable config supplies the token after restart without exposing it to LLMs or session reads", async () => {
+  const s = await startStack();
+  try {
+    const id = await s.create("config-credential");
+    const replacement = config.executionToken.slice(0, -43) + "y".repeat(43);
+    const removed = await s.control("/internal", { sessionId: id, command: { action: "updateExecution", value: { token: replacement, expectedRevision: 1 } } });
+    assert.equal(removed.ok, false);
+    const reinitialized = await s.control("/internal", { sessionId: id, command: { action: "initialize",
+      value: { session: { sessionId: id, harness: { id: "pi-no-compaction", version: "v1" } }, config: { ...config, executionToken: replacement } } } });
+    assert.equal(reinitialized.ok, true);
+    assert.ok(!JSON.stringify(reinitialized).includes(config.executionToken));
+    await s.app.unsafeEvictDurableObject("host", "PiNoCompactionSessionV1", { name: id });
+    const view = await s.control("/internal", { sessionId: id, command: { action: "getSession" } });
+    assert.ok(!JSON.stringify(view).includes(config.executionToken));
+    await s.input(id, "prompt");
+    let jobs = await until(() => s.control<Job[]>("/jobs"), j => j.length === 1);
+    assert.ok(!JSON.stringify(jobs[0]!.request).includes(config.executionToken));
+    await s.control("/finish", { id: jobs[0]!.id, outcome: llmResult(["pwd"]) });
+    jobs = await until(() => s.control<Job[]>("/jobs"), j => j.length === 2);
+    const tool = jobs.find(j => j.request.submission.request.provider === "tool-pi-bash")!;
+    assert.equal((tool.request as typeof tool.request & { execution: { token: string } }).execution.token, config.executionToken);
+    assert.ok(!JSON.stringify(tool.request.submission).includes(config.executionToken));
+    await s.control("/finish", { id: tool.id, outcome: bashResult });
+    jobs = await until(() => s.control<Job[]>("/jobs"), j => j.length === 3);
+    assert.ok(!JSON.stringify(jobs[2]!.request).includes(config.executionToken));
+    assert.ok(!JSON.stringify(await s.page(id)).includes(config.executionToken));
+  } finally { await s.app.dispose(); }
+});
