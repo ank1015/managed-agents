@@ -1,9 +1,9 @@
+import { parseToolExecutionSubmission, parseToolExecutionContext } from "./tool-execution.ts";
+import type { ToolExecutionSubmission, ToolExecutionContext } from "./tool-execution.ts";
 import { ContractException } from "./errors.ts";
 import { parseJsonValue } from "./json.ts";
-import { parseProviderSubmission } from "./operation.ts";
-import type { ProviderSubmission } from "./operation.ts";
 import { parseUuid } from "./llm.ts";
-import type { LlmTool, SessionDestination } from "./llm.ts";
+import type { LlmTool } from "./llm.ts";
 import { isAbsoluteMachinePath } from "./pi-bash.ts";
 import { nonemptyString, record } from "./validation.ts";
 
@@ -25,7 +25,9 @@ export const PI_WRITE_TOOL = Object.freeze({
 
 export type WriteToolInput = { path: string; content: string };
 export type WriteInput = WriteToolInput & { machineId: string; cwd: string };
-export interface WriteSubmission { destination: SessionDestination; submission: ProviderSubmission }
+export type WriteExecutionContext = ToolExecutionContext;
+export const parseWriteExecutionContext = parseToolExecutionContext;
+export type WriteSubmission = ToolExecutionSubmission;
 export interface WriteWorkerBinding { submit(value: unknown): Promise<unknown> }
 
 /** Size is checked by the worker so oversized content becomes a completed tool error. */
@@ -42,23 +44,14 @@ export function parseWriteInput(value: unknown): WriteInput {
   if (!isAbsoluteMachinePath(cwd) || cwd.length > 8192) throw new ContractException("INVALID_REQUEST", "cwd must be an absolute machine path of at most 8192 characters.");
   return { machineId: parseUuid(r.machineId), cwd, ...parseWriteToolInput({ path: r.path!, content: r.content! }) };
 }
-export function parseWriteSubmission(value: unknown): WriteSubmission {
-  const r = record(parseJsonValue(value), ["destination", "submission"], "write submission");
-  const d = record(r.destination, ["routeKey", "sessionId"], "destination");
-  const destination = { routeKey: nonemptyString(d.routeKey, "routeKey"), sessionId: nonemptyString(d.sessionId, "sessionId") };
-  const submission = parseProviderSubmission(r.submission);
-  for (const id of [destination.routeKey, destination.sessionId, submission.operationId, submission.submissionId]) {
-    if (id.length > 2048) throw new ContractException("INVALID_REQUEST", "Operation routing identifier is too long.");
-  }
-  return { destination, submission };
-}
+export const parseWriteSubmission = parseToolExecutionSubmission;
 
 export type WriteResult = {
   content: { type: "text"; text: string }[];
   isError: boolean;
   details: {
-    /** Absent for a local size error, before a gateway job exists. */
-    gatewayJobId?: string;
+    /** Absent for a local size error, before an execution request is sent. */
+    requestId?: string;
     machineId: string; path: string;
     file?: { path: string; mutationId: string; sha256: string; bytesWritten: number; disposition: "applied" | "already_applied" };
     error?: { code: string; message: string };
