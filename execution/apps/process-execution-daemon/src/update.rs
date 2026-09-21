@@ -199,4 +199,43 @@ mod tests {
         assert!(secure_url("http://example.com/a").is_err());
         assert!(secure_url("https://secret@example.com/a").is_err());
     }
+
+    #[test]
+    fn release_generator_matches_the_strict_updater_manifest() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in [
+            "process-execution-daemon-linux-x86_64",
+            "process-execution-daemon-macos-universal",
+            "process-execution-daemon-windows-x86_64.exe",
+        ] {
+            std::fs::write(directory.path().join(name), b"test release bytes").unwrap();
+        }
+        let output = std::process::Command::new("node")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/release/manifest.mjs"))
+            .arg(directory.path())
+            .arg("https://downloads.example.com/releases/test/1-1/")
+            .arg("0.1.0+git.test.1.1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let manifest: Manifest =
+            serde_json::from_slice(&std::fs::read(directory.path().join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest.protocol_version, 1);
+        assert_eq!(manifest.binary, "process-execution-daemon");
+        assert_eq!(manifest.version, "0.1.0+git.test.1.1");
+        assert_eq!(manifest.artifacts.len(), 4);
+        for artifact in &manifest.artifacts {
+            secure_url(&artifact.url).unwrap();
+            checksum(b"test release bytes", &artifact.sha256).unwrap();
+            assert_eq!(artifact.size_bytes, b"test release bytes".len());
+        }
+        assert_eq!(manifest.artifacts[1].url, manifest.artifacts[2].url);
+        assert_eq!(manifest.artifacts[1].arch, "x86_64");
+        assert_eq!(manifest.artifacts[2].arch, "aarch64");
+    }
 }
