@@ -244,10 +244,11 @@ test("image work shares the callback deadline and cannot acknowledge before uplo
     assert.equal((await result(stack, sessionId)).isError, false);
   } finally { await stack.app.dispose(); }
 });
-test("read deployment is standalone and callback routing includes both bash and read", async () => {
+test("read deployment routes Pi sessions without local persistence", async () => {
   const config = await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8");
-  assert.doesNotMatch(config, /d1_databases|queues|durable_objects|MINIMAL_BASH_SESSIONS/);
-  assert.match(config, /"SESSION_ROUTES": "\{\}"/);
+  assert.doesNotMatch(config, /d1_databases|queues|MINIMAL_BASH_SESSIONS/);
+  assert.match(config, /pi-no-compaction-v1/);
+  assert.match(config, /PiNoCompactionSessionV1/);
   const router = await readFile(new URL("../../execution-gateway-callback-workers/wrangler.jsonc", import.meta.url), "utf8");
   assert.match(router, /PiReadCallbacks/); assert.match(router, /PiBashCallbacks/);
 });

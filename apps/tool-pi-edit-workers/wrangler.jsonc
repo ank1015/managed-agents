@@ -14,8 +14,9 @@
   },
   "vars": {
     "EXECUTION_GATEWAY_URL": "https://execution.acentric.dev",
-    // No harness has adopted edit yet. Add its namespace binding and route together.
-    "SESSION_ROUTES": "{}"
+    // Harness routes and namespace bindings must be updated together.
+    "SESSION_ROUTES": "{\"pi-no-compaction-v1\":\"PI_NO_COMPACTION_SESSIONS\"}"
   },
-  "triggers": { "crons": [] }
+  "triggers": { "crons": [] },
+  "durable_objects": { "bindings": [{ "name": "PI_NO_COMPACTION_SESSIONS", "class_name": "PiNoCompactionSessionV1", "script_name": "managed-agents-harness-pi-no-compaction-v1" }] }
 }
