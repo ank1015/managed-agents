@@ -1,9 +1,9 @@
+import { parseToolExecutionSubmission } from "./tool-execution.ts";
+import type { ToolExecutionSubmission } from "./tool-execution.ts";
 import { ContractException } from "./errors.ts";
 import { parseJsonValue } from "./json.ts";
-import { parseProviderSubmission } from "./operation.ts";
-import type { ProviderSubmission } from "./operation.ts";
 import { parseUuid } from "./llm.ts";
-import type { LlmContent, LlmTool, SessionDestination } from "./llm.ts";
+import type { LlmContent, LlmTool } from "./llm.ts";
 import { isAbsoluteMachinePath } from "./pi-bash.ts";
 import { nonemptyString, record } from "./validation.ts";
 
@@ -28,7 +28,7 @@ export const PI_READ_TOOL = Object.freeze({
 
 export type ReadToolInput = { path: string; offset?: number; limit?: number };
 export type ReadInput = ReadToolInput & { machineId: string; cwd: string };
-export interface ReadSubmission { destination: SessionDestination; submission: ProviderSubmission }
+export type ReadSubmission = ToolExecutionSubmission;
 export interface ReadWorkerBinding { submit(value: unknown): Promise<unknown> }
 
 export function parseReadToolInput(value: unknown): ReadToolInput {
@@ -50,16 +50,7 @@ export function parseReadInput(value: unknown): ReadInput {
   return { machineId: parseUuid(r.machineId), cwd,
     ...parseReadToolInput({ path: r.path!, ...(r.offset === undefined ? {} : { offset: r.offset }), ...(r.limit === undefined ? {} : { limit: r.limit }) }) };
 }
-export function parseReadSubmission(value: unknown): ReadSubmission {
-  const r = record(parseJsonValue(value), ["destination", "submission"], "read submission");
-  const d = record(r.destination, ["routeKey", "sessionId"], "destination");
-  const destination = { routeKey: nonemptyString(d.routeKey, "routeKey"), sessionId: nonemptyString(d.sessionId, "sessionId") };
-  const submission = parseProviderSubmission(r.submission);
-  for (const id of [destination.routeKey, destination.sessionId, submission.operationId, submission.submissionId]) {
-    if (id.length > 2048) throw new ContractException("INVALID_REQUEST", "Operation routing identifier is too long.");
-  }
-  return { destination, submission };
-}
+export const parseReadSubmission = parseToolExecutionSubmission;
 
 export type ReadTruncation = {
   content: string; truncated: boolean; truncatedBy: "lines" | "bytes" | null;
@@ -71,7 +62,7 @@ export type ReadResult = {
   /** Expected file/argument/size errors are completed tool invocations. */
   isError: boolean;
   details: {
-    gatewayJobId: string; machineId: string; path: string;
+    requestId: string; machineId: string; path: string;
     file?: { sizeBytes: number; sha256: string; modifiedAt: number | null; isSymlink: boolean };
     truncation?: ReadTruncation;
     image?: { id: string; url: string; mimeType: string; originalMimeType: string };
