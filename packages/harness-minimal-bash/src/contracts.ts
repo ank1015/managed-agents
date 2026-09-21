@@ -1,4 +1,4 @@
-import { ContractException, isAbsoluteMachinePath, parseEventBody, parseJsonValue, parseLlmMessage, parseUuid } from "@managed-agents/contracts";
+import { ContractException, parseExecutionToken, isAbsoluteMachinePath, parseEventBody, parseJsonValue, parseLlmMessage, parseUuid } from "@managed-agents/contracts";
 import type { EventBody, JsonValue, LlmMessage } from "@managed-agents/contracts";
 
 export const MINIMAL_BASH_IDENTITY = Object.freeze({ id: "minimal-bash", version: "v7" });
@@ -19,6 +19,7 @@ export interface MinimalBashConfig {
   accountId: string;
   reasoning: ReasoningLevel;
   machineId: string;
+  executionToken: string;
   cwd: string;
 }
 export type UserMessage = Extract<LlmMessage, { role: "user" }>;
@@ -34,15 +35,17 @@ function fields(value: unknown, keys: string[]): Record<string, JsonValue> {
 }
 export function parseMinimalBashConfig(value: JsonValue): MinimalBashConfig {
   try {
-    const c = fields(value, ["provider", "modelId", "accountId", "reasoning", "machineId", "cwd"]);
+    const c = fields(value, ["provider", "modelId", "accountId", "reasoning", "machineId", "executionToken", "cwd"]);
     if (c.provider !== "openai") throw new Error("provider must be openai.");
     if (typeof c.modelId !== "string" || !Object.hasOwn(OPENAI_MODELS, c.modelId)) throw new Error("modelId must belong to the OpenAI catalog.");
     const reasoning = c.reasoning ?? "medium";
     if (Object.hasOwn(c, "reasoning") && c.reasoning === null) throw new Error("reasoning cannot be null.");
     if (!REASONING_LEVELS.includes(reasoning as ReasoningLevel)) throw new Error("reasoning must be low, medium, high, xhigh or max.");
     if (typeof c.cwd !== "string" || !c.cwd || c.cwd.length > 8192 || !isAbsoluteMachinePath(c.cwd)) throw new Error("cwd must be an absolute machine path.");
+    const machineId = parseUuid(c.machineId), executionToken = parseExecutionToken(c.executionToken);
+    if (executionToken.split(".")[1] !== machineId) throw new Error("executionToken must belong to machineId.");
     return { provider: "openai", modelId: c.modelId as MinimalBashConfig["modelId"],
-      accountId: parseUuid(c.accountId), reasoning: reasoning as ReasoningLevel, machineId: parseUuid(c.machineId), cwd: c.cwd };
+      accountId: parseUuid(c.accountId), reasoning: reasoning as ReasoningLevel, machineId, executionToken, cwd: c.cwd };
   } catch (error) { throw new ContractException("INVALID_CONFIG", error instanceof Error ? error.message : "Invalid minimal bash configuration."); }
 }
 export function parseMinimalBashInput(value: EventBody): MinimalBashInput {

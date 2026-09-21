@@ -2,7 +2,7 @@
 
 `minimal-bash/v7` is a persistent coding agent with a fixed system prompt, OpenAI, and exactly one tool: Pi-style `bash`. Its [Worker host](../../apps/harness-minimal-bash/README.md) connects the transactional harness to the existing operation workers. This package performs no network calls.
 
-V7 is **deployed on 2026-09-20** in a fresh namespace; retained v6 code/data is unchanged. V7 removes message `AUTOINCREMENT` and the context partial index, along with the runtime write optimizations. Messages remain append-only: never remove the highest sequence row without a replacement high-water mark. Context construction scans the full ordered transcript, filters `in_context` in memory, and applies request size limits only to included messages. Excluded messages remain available in the transcript. No full-history memory cache is added. See the [deployment guide](../../DEPLOYMENT.md) and the earlier [deployment guide](../../DEPLOYMENT.md).
+V7 removes message `AUTOINCREMENT` and the context partial index, along with the runtime write optimizations. Messages remain append-only: never remove the highest sequence row without a replacement high-water mark. Context construction scans the full ordered transcript, filters `in_context` in memory, and applies request size limits only to included messages. Excluded messages remain available in the transcript. No full-history memory cache is added.
 
 ## Terminology and configuration
 
@@ -16,7 +16,8 @@ type Config = {
   modelId: "gpt-6-astra" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna";
   accountId: string; // UUID owned by the LLM worker's dedicated gateway user
   reasoning?: "low" | "medium" | "high" | "xhigh" | "max"; // default: medium
-  machineId: string; // UUID accessible to the execution-gateway user
+  machineId: string; // Execution gateway machine UUID.
+  executionToken: string; // Required me1 machine secret; must match machineId.
   cwd: string; // absolute path on that machine
 };
 ```
@@ -24,6 +25,12 @@ type Config = {
 Config is immutable after initialization. Unknown fields, unsupported models/providers, malformed UUIDs and relative paths are rejected. The model catalog is an explicit snapshot of `../llm-providers/packages/provider-openai/src/models.ts`; updates require a deliberate local capability update. All five reasoning levels are supported by the four allowlisted models as verified against their official OpenAI model pages on 2026-09-18. The default is our harness policy, not the provider's default.
 
 Each bash invocation receives the same configured machine and cwd. A preceding `cd` or `export` does not change the next invocation. The model supplies only the Pi tool's `command` and optional `timeout` in seconds. Neither cwd nor the system prompt is a security sandbox.
+
+The token is validated and stored in the initial resolved configuration. The host
+uses it only for runtime discovery and private tool submission, never for model
+arguments or conversation history. Configuration cannot be updated after creation.
+Rotation at the gateway requires a new session with the replacement token; pending
+accepted results can still be delivered through the daemon outbox.
 
 ## Inputs
 
@@ -82,7 +89,7 @@ Expected limits/provider failures commit a failed state instead of poisoning the
 - Pending steering, transcript and consumed input hashes have no retention or session-wide quota. Completed runtime outcomes and accepted-job receipts are not kept after their completion transition commits. No token streaming or push transport.
 - Soft cancellation cannot stop a stalled operation. Bash has no default timeout when the model omits one.
 - The LLM gateway retains a full request snapshot per job within its retention policy. Removing runtime request storage does not fix repeated upstream full-history storage.
-- Execution-host log quotas, restart-safe cleanup, timeout grace and log expiry remain upstream constraints; see the [bash worker](../../apps/tool-pi-bash-workers/README.md#deadlines-and-recovery-ownership).
+- Execution-host log quotas, restart-safe cleanup, timeout grace and log expiry remain upstream constraints; see the [bash worker](../../apps/tools/tool-pi-bash-workers/README.md#deadlines-and-recovery-ownership).
 
 ## Checks
 
