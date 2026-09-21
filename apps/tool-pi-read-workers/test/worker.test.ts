@@ -251,3 +251,43 @@ test("read deployment is standalone and callback routing includes both bash and 
   const router = await readFile(new URL("../../execution-gateway-callback-workers/wrangler.jsonc", import.meta.url), "utf8");
   assert.match(router, /PiReadCallbacks/); assert.match(router, /PiBashCallbacks/);
 });
+
+
+test("v4 and v5 callbacks and terminal replay preserve success/error semantics; unsupported versions reject", async () => {
+  const stack = await startStack();
+  try {
+    for (const version of [4, 5]) {
+      for (const failed of [false, true]) {
+        const { sessionId, job } = await start(stack);
+        stack.gateway.finish(job);
+        if (failed) {
+          job.status = "failed";
+          job.response = { protocol_version: version, request_id: job.id, generation_id: job.runtimeGenerationId,
+            status: "error", error: { code: "invalid_argument", message: "Known native error" } };
+        } else job.response = { ...(job.response as object), protocol_version: version };
+        const request = { destination: { routeKey: "test-v1", sessionId }, submission: {
+          operationId: job.clientContext.operationId, submissionId: job.clientContext.submissionId,
+          request: { provider: "tool-pi-read", type: "read", version: "v1", input } } };
+        const notification = event(job);
+        for (const unsupported of [3, 6, "5", null]) {
+          const response: { protocol_version: number | string | null } = { ...(job.response as object), protocol_version: unsupported };
+          assert.equal((await stack.callbacks.fetch(url, signed({ ...notification, response }))).status, 503);
+          stack.gateway.detailValue = row => ({ ...row, response });
+          await assert.rejects(stack.call("/submit", request));
+        }
+        stack.gateway.detailValue = undefined;
+        assert.equal((await stack.call("/snapshot", { sessionId })).admittedCompletions, 0);
+        assert.equal((await stack.callbacks.fetch(url, signed(notification))).status, 204);
+        const value = await outcome(stack, sessionId);
+        assert.equal(value.status, "succeeded");
+        if (value.status !== "succeeded") throw new Error("Expected tool result");
+        assert.equal((value.result as ReadResult).isError, failed);
+        const replay = await stack.call<ProviderSubmitResult>("/submit", request);
+        assert.equal(replay.status, "completed");
+        if (replay.status !== "completed") throw new Error("Expected terminal replay");
+        assert.deepEqual(replay.outcome, value);
+      }
+    }
+    assert.equal(stack.gateway.jobs.size, 4);
+  } finally { await stack.app.dispose(); }
+});

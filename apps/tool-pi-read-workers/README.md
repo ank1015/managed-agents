@@ -47,7 +47,7 @@ Normal submissions return `{ result: { status: "accepted", jobId } }`. A replay 
 
 ## Completion and output
 
-The common execution callback router verifies v3 HMAC events and forwards `tool-pi-read-v1` to the private `PiReadCallbacks.acceptGatewayEvent` entrypoint. The adapter checks the exact read context, machine, idempotency key, protocol version 4, request/job ID and runtime generation. It validates file metadata, canonical base64 and the SHA-256 digest before formatting.
+The common execution callback router verifies v3 HMAC events and forwards `tool-pi-read-v1` to the private `PiReadCallbacks.acceptGatewayEvent` entrypoint. The adapter checks the exact read context, machine, idempotency key, protocol version 4 or 5, request/job ID and runtime generation. It validates file metadata, canonical base64 and the SHA-256 digest before formatting.
 
 Text output follows Pi's head truncation semantics: at most 2,000 complete lines or 50 KiB, with continuation hints, UTF-8 decoding, one-based offset/limit and an overlong-first-line hint. The final notice is outside the content cap, as in Pi. Missing files, directories, filesystem I/O errors and offsets beyond EOF are completed `isError: true` tool results.
 
@@ -110,3 +110,12 @@ Future harness adoption is a separate change: bind `PiRead`, add an allowlisted 
 `pnpm --filter @managed-agents/tool-pi-read-workers check` runs source/test typechecks, formatting tests, real workerd RPC/SQLite integration using the production callback router and a test-only harness, and a dry-run build. Coverage includes the 5 MiB boundary, file errors, images, BMP conversion, lost uploads/receipts, concurrent callbacks, early delivery, terminal replay/correlation, restart recovery and deadlines. Gateway and Images HTTP services are fakes; checks do not upload real files or deploy resources.
 
 The separate 2026-09-21 production run passed 16 read scenarios, text/image terminal replay and manual callback redelivery, plus an existing minimal-bash/v7 regression. Five non-sensitive test images remain in Images storage; credentials are installed as Worker secrets. Hosted Images storage was activated with user approval at a $5/month minimum plus delivery/usage charges.
+
+## Execution protocol compatibility
+
+Callbacks and terminal job replay accept numeric execution protocol versions **4
+and 5**, preserving retained v4 jobs during the v5 rollout. Other versions and
+malformed version fields are rejected; job, runtime generation and tool-specific
+receipt validation still apply. This is independent of the signed webhook's
+`schemaVersion: 3`. Requests use the existing gateway operation envelope, which
+leaves native protocol-version selection to the gateway.
