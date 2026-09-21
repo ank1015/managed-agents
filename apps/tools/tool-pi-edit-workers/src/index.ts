@@ -5,10 +5,10 @@ import type { Env } from "./types.ts";
 export class PiEdit extends WorkerEntrypoint<Env> {
   async submit(value: unknown): Promise<unknown> { return { result: await new EditService(this.env).submit(value) }; }
 }
-/** Only the trusted signature-verifying execution callback router may bind this entrypoint. */
+/** Only the execution gateway should bind this private completion entrypoint. */
 export class PiEditCallbacks extends WorkerEntrypoint<Env> {
-  async acceptGatewayEvent(value: unknown): Promise<unknown> {
-    return { receipt: await new EditService(this.env).acceptGatewayEvent(value) };
+  async acceptExecutionResult(value: unknown) {
+    return new EditService(this.env).acceptExecutionResult(value);
   }
 }
 export default {
