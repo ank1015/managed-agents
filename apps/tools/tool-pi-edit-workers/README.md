@@ -118,8 +118,7 @@ exposes only GET `/health`. Timeout does not undo an accepted mutation.
 
 Production harness execution-context integration is implemented. Coordinate its
 deployment and drain old edits before rollout. Deploy this worker before the
-gateway with its matching private callback binding. This change
-has been tested locally and has not been deployed.
+gateway with its matching private callback binding. This contract is deployed; see the [deployment record](../../../execution/DEPLOYMENT.md).
 
 ## Verification
 

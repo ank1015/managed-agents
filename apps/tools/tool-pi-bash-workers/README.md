@@ -129,7 +129,7 @@ Both production harnesses now supply execution context through their shared host
 integration. Coordinate the rollout with those hosts,
 drain old bash operations, deploy this worker before the Machine binding, then
 use its matching private callback binding. Public HTTP exposes only GET `/health`.
-This migration has been tested locally and has not been deployed in this change.
+This contract is deployed; see the [deployment record](../../../execution/DEPLOYMENT.md).
 
 ## Verification
 

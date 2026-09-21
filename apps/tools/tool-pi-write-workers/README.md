@@ -129,8 +129,7 @@ cancellation does not undo an accepted write. Public HTTP exposes only `/health`
 
 Coordinate the caller execution-context migration and drain old writes before a
 production cutover. Deploy the write worker before the Machine binding, then
-use its matching private callback binding. This migration has been tested locally;
-it has not been deployed as part of this change.
+use its matching private callback binding. This contract is deployed; see the [deployment record](../../../execution/DEPLOYMENT.md).
 
 ## Verification
 

@@ -115,7 +115,7 @@ Production harness execution-context integration is implemented. Coordinate its
 deployment and drain old reads before rollout. Deploy this worker before the
 Machine callback binding; remove the legacy router's read binding. Public
 HTTP exposes only GET `/health`. Cwd is a resolution base, not a filesystem sandbox.
-This migration has been tested locally and has not been deployed in this change.
+This contract is deployed; see the [deployment record](../../../execution/DEPLOYMENT.md).
 
 ## Verification
 

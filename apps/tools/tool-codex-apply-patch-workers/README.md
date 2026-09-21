@@ -2,7 +2,8 @@
 
 Standalone, stateless `tool-codex-apply-patch/apply_patch/v1` provider. Each call
 submits one native `filesystem.patch` request using `format: "codex"` through the
-machine-only execution gateway. This breaking contract has not been deployed.
+machine-only execution gateway. This breaking contract is deployed; see the [deployment record](../../../execution/DEPLOYMENT.md).
+Its production session routes remain empty until a harness adopts apply_patch.
 Neither production harness currently exposes this tool.
 
 ## Input and model interface
