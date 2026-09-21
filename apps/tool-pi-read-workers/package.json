@@ -1,0 +1,27 @@
+{
+  "name": "@managed-agents/tool-pi-read-workers",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+    "test": "node --test test/*.test.ts",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "dependencies": {
+    "@managed-agents/diagnostics": "workspace:*",
+    "@managed-agents/contracts": "workspace:*",
+    "bmp-ts": "1.0.9",
+    "fast-png": "8.0.0"
+  },
+  "devDependencies": {
+    "@managed-agents/harness-api": "workspace:*",
+    "@managed-agents/session-runtime": "workspace:*",
+    "@cloudflare/workers-types": "5.20260910.1",
+    "esbuild": "0.27.3",
+    "miniflare": "4.20260730.0",
+    "wrangler": "4.116.0"
+  }
+}

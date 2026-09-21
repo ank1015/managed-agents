@@ -244,6 +244,40 @@ importers:
         specifier: 4.116.0
         version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
 
+  apps/tool-pi-read-workers:
+    dependencies:
+      '@managed-agents/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@managed-agents/diagnostics':
+        specifier: workspace:*
+        version: link:../../packages/diagnostics
+      bmp-ts:
+        specifier: 1.0.9
+        version: 1.0.9
+      fast-png:
+        specifier: 8.0.0
+        version: 8.0.0
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20260910.1
+        version: 5.20260910.1
+      '@managed-agents/harness-api':
+        specifier: workspace:*
+        version: link:../../packages/harness-api
+      '@managed-agents/session-runtime':
+        specifier: workspace:*
+        version: link:../../packages/session-runtime
+      esbuild:
+        specifier: 0.27.3
+        version: 0.27.3
+      miniflare:
+        specifier: 4.20260730.0
+        version: 4.20260730.0
+      wrangler:
+        specifier: 4.116.0
+        version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
+
   packages/contracts: {}
 
   packages/diagnostics: {}
@@ -863,6 +897,9 @@ packages:
   blake3-wasm@2.1.5:
     resolution: {integrity: sha512-F1+K8EbfOZE49dtoPtmxUQrpXaBIl3ICvasLh+nJta0xkz+9kF/7uet9fLnwKqhDrmj6g+6K3Tw9yQPUg2ka5g==}
 
+  bmp-ts@1.0.9:
+    resolution: {integrity: sha512-cTEHk2jLrPyi+12M3dhpEbnnPOsaZuq7C45ylbbQIiWgDFZq4UVYPEY5mlqjvsj/6gJv9qX5sa+ebDzLXT28Vw==}
+
   cookie@1.1.1:
     resolution: {integrity: sha512-ei8Aos7ja0weRpFzJnEA9UHJ/7XQmqglbRwnf2ATjcB9Wq874VKH9kfjjirM6UhU2/E5fFYadylyhFldcqSidQ==}
     engines: {node: '>=18'}
@@ -884,10 +921,19 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  fast-png@8.0.0:
+    resolution: {integrity: sha512-gCysNasJ8KEMgfdYIKd/wTDo6ENK1PWT0RJO7O+0pgmuHPw2O6tA1WvdxFRJoLf9V8yFYpG0FA1YgI8X97OhJA==}
+
+  fflate@0.8.3:
+    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
+
   fsevents@2.3.3:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
+
+  iobuffer@6.0.1:
+    resolution: {integrity: sha512-SZWYkWNfjIXIBYSDpXDYIgshqtbOPsi4lviawAEceR1Kqk+sHDlcQjWrzNQsii80AyBY0q5c8HCTNjqo74ul+Q==}
 
   kleur@4.1.5:
     resolution: {integrity: sha512-o+NO+8WrRiQEE4/7nwRJhN1HWpVmJm511pBHUxPLtp0BUISzlBplORYSmTclCnJvQq2tKu/sgl3xVpkc7ZWuQQ==}
@@ -1299,6 +1345,8 @@ snapshots:
 
   blake3-wasm@2.1.5: {}
 
+  bmp-ts@1.0.9: {}
+
   cookie@1.1.1: {}
 
   detect-libc@2.1.2: {}
@@ -1363,8 +1411,17 @@ snapshots:
       '@esbuild/win32-ia32': 0.28.1
       '@esbuild/win32-x64': 0.28.1
 
+  fast-png@8.0.0:
+    dependencies:
+      fflate: 0.8.3
+      iobuffer: 6.0.1
+
+  fflate@0.8.3: {}
+
   fsevents@2.3.3:
     optional: true
+
+  iobuffer@6.0.1: {}
 
   kleur@4.1.5: {}
 
