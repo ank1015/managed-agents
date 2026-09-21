@@ -89,3 +89,12 @@ The repository configuration adds `tool-pi-edit-v1 → EDIT_EVENTS`, bound to
 redeploying the router with this binding. This receiver was deployed and verified on 2026-09-21. It normalizes protocol-v5 patch receipts,
 including failed jobs carrying structured rejection/partial results. Production
 harness adoption is separate. See the [edit worker](../tool-pi-edit-workers/README.md).
+
+## Codex apply_patch receiver
+
+The repository configuration also includes
+`tool-codex-apply-patch-v1 → APPLY_PATCH_EVENTS → CodexApplyPatchCallbacks` on
+`managed-agents-tool-codex-apply-patch`. Deploy that worker before deploying this
+new router binding. The worker and receiver were deployed and tested on the real Mac on 2026-09-21.
+All 23 test job callbacks delivered successfully.
+See [the worker's deployment and adoption notes](../tool-codex-apply-patch-workers/README.md).
