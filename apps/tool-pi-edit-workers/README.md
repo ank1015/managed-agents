@@ -3,7 +3,7 @@
 Standalone stateless `tool-pi-edit/edit/v1` provider. Each call submits one native
 `filesystem.apply_patch` job using `text_replacements`. No preliminary file read,
 shell command, adapter database, Durable Object, Queue or background delivery is
-needed. Production harness adoption is separate; the minimal-bash harness is unchanged.
+needed. The `pi-no-compaction/v1` harness uses this worker; the minimal-bash harness is unchanged.
 
 ## Model arguments and results
 
@@ -153,8 +153,8 @@ GET `/health`; submission and callbacks use private service bindings.
    callback URL and the callback router's signing secret.
 3. Deploy the callback router afterward. Its repository config adds
    `tool-pi-edit-v1 → EDIT_EVENTS → PiEditCallbacks`.
-4. An adopting caller binds `PiEdit` and configures a matching session namespace
-   and route. The committed edit-worker config deliberately has `SESSION_ROUTES: "{}"`.
+4. The Pi harness binds `PiEdit` and has a matching session namespace and route.
+   Additional callers must configure their own binding and route together.
 
 ## Verification
 

@@ -2,7 +2,7 @@
 
 Standalone stateless `tool-pi-write/write/v1` provider. It submits one
 `filesystem.write_file` job with `mode: "overwrite"` to the execution gateway.
-Production harness adoption is separate; `minimal-bash/v7` still exposes only bash.
+The `pi-no-compaction/v1` harness uses this worker; `minimal-bash/v7` still exposes only bash.
 
 ## Input and output
 
@@ -119,8 +119,8 @@ identifiers/status/duration and never file content or base64 payloads.
 
 ## Configuration and deployment
 
-The committed worker config has `SESSION_ROUTES: "{}"` and no session binding.
-A future caller must configure its namespace binding and route together. Unknown
+The committed worker config routes `pi-no-compaction-v1` to its session namespace.
+Any additional caller must configure its namespace binding and route together. Unknown
 routes fail before gateway submission.
 
 1. Deploy compatible execution gateway and host-runtime builds.
@@ -128,8 +128,8 @@ routes fail before gateway submission.
    `EXECUTION_GATEWAY_API_KEY` secret for a user with the shared v3 callback URL.
 3. Deploy the callback router after the write worker exists. Its config includes
    `tool-pi-write-v1 → WRITE_EVENTS → PiWriteCallbacks` alongside bash and read.
-4. When adopting the tool, bind private `PiWrite` from the caller and allowlist its
-   session namespace in the write worker. This change does not modify any harness.
+4. The Pi harness binds private `PiWrite` and has an allowlisted session namespace
+   in the write worker.
 
 Deployed and tested on the benchmark Mac on 2026-09-21.
 

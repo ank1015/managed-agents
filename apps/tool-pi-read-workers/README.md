@@ -2,7 +2,7 @@
 
 Implements `tool-pi-read/read/v1` through the execution gateway's existing `filesystem.read_file` operation. The gateway owns file access, durable jobs, idempotency and callback retries. This worker validates inputs, formats text, uploads images and admits results into the session DO.
 
-**Deployed and tested on 2026-09-21; not adopted by a production harness.** `minimal-bash/v7` remains bash-only. The final deployment has an empty `SESSION_ROUTES` and no session namespace binding. A caller must configure its return namespace before using the private submission binding. Production tests temporarily bound an authenticated test host, exercised the real gateway/Mac/router/SQLite admission path, then removed that route after delivery verification.
+**Deployed and tested on 2026-09-21.** The `pi-no-compaction/v1` harness now uses this worker through its private binding and session namespace. `minimal-bash/v7` remains bash-only.
 
 ## Submission and model schema
 
@@ -41,7 +41,7 @@ The host supplies machineId and absolute cwd. Unknown fields, NUL paths, invalid
 }
 ```
 
-The gateway reads the whole file before this worker applies line paging. **The maximum raw file size is 5 MiB (5,242,880 bytes), even with offset/limit.** Larger files produce a completed tool result with `isError: true` and `READ_FILE_TOO_LARGE`; they do not fail the operation. A future harness can return this error to the model and continue.
+The gateway reads the whole file before this worker applies line paging. **The maximum raw file size is 5 MiB (5,242,880 bytes), even with offset/limit.** Larger files produce a completed tool result with `isError: true` and `READ_FILE_TOO_LARGE`; they do not fail the operation. The Pi harness returns this error to the model and continues.
 
 Normal submissions return `{ result: { status: "accepted", jobId } }`. A replay finding a terminal job fetches its retained detail, checks correlation and returns `completed` with the same normalized outcome. This is the only gateway result GET. Ambiguous submission/transport failures throw so the runtime retries the original identity. Known pre-acceptance rejections return `rejected`.
 
@@ -103,7 +103,7 @@ Text reads do not require Images credentials. Configure `.dev.vars` from the exa
 
 For deployment, configure Images and secrets, then deploy this worker before deploying the router's new `READ_EVENTS` service binding. The router's source allowlist now includes both bash and read. The gateway user must use v3 callbacks and the existing common callback URL. No gateway protocol changes are needed.
 
-Future harness adoption is a separate change: bind `PiRead`, add an allowlisted return namespace here, register `tool-pi-read/read/v1`, advertise `PI_READ_TOOL`, supply trusted machine/cwd and render `ReadResult` into model tool messages. None of those harness changes is included now.
+The Pi harness binds `PiRead`, uses the allowlisted `pi-no-compaction-v1` return namespace, registers `tool-pi-read/read/v1`, advertises `PI_READ_TOOL`, and supplies trusted machine/cwd.
 
 ## Checks
 

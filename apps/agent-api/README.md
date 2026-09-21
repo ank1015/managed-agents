@@ -1,6 +1,6 @@
 # Agent API
 
-Authenticated backend access to minimal-bash sessions. The API owns authentication, authoritative D1 session routing and creation recovery. Session objects own input admission, transactions, operations and alarms. The API imports shared contracts, never a harness implementation or the session runtime.
+Authenticated backend access to minimal-bash and Pi no-compaction sessions. The API owns authentication, authoritative D1 session routing and creation recovery. Session objects own input admission, transactions, operations and alarms. The API imports shared contracts, never a harness implementation or the session runtime.
 
 V7 is **deployed on 2026-09-20**; source/configurations and examples below target the live v7 SQLite optimization release. See the [deployment guide](../../DEPLOYMENT.md), [deployment guide](../../DEPLOYMENT.md) and [coordinated rollout](../harness-minimal-bash/README.md#setup-and-rollout). No deployment is performed by checks.
 
@@ -65,7 +65,7 @@ Create a session:
 }
 ```
 
-`requestId` is required, nonempty, globally scoped and at most 200 characters. `metadata` is a required JSON object. The source registry contains only `minimal-bash/v7`. Session IDs are opaque `ses_<UUID>` strings. The object's name is the complete public ID within its pinned namespace. See the [minimal-bash config, inputs and read contracts](../harness-minimal-bash/README.md#create-and-use-a-session) for coding sessions.
+`requestId` is required, nonempty, globally scoped and at most 200 characters. `metadata` is a required JSON object. The source registry contains `minimal-bash/v7` and `pi-no-compaction/v1`. The Pi harness is deployed; see its [configuration](../../packages/harness-pi-no-compaction/README.md) and [production verification](../../PI_NO_COMPACTION_PRODUCTION_TEST.md). Session IDs are opaque `ses_<UUID>` strings. The object's name is the complete public ID within its pinned namespace. See the [minimal-bash config, inputs and read contracts](../harness-minimal-bash/README.md#create-and-use-a-session) for coding sessions.
 
 The list response is `{ "sessions": [{ "sessionId": "ses_<UUID>", "harness": { "id": "minimal-bash", "version": "v7" }, "metadata": { "source": "example" }, "status": "idle" }] }`. Status is one of `initializing`, `initialization_failed`, `idle`, `running`, `failed`, `cancelling`, `cancelled`, `waiting`, or `destroyed`. Creation starts at `initializing`; after DO initialization the API marks it `idle`. Invalid config becomes `initialization_failed`, distinct from a failed run. `destroyed` is reserved for retirement; there is no destroy endpoint yet.
 
@@ -80,7 +80,7 @@ Submit an input using the returned session ID:
 
 A receipt contains `sessionId`, `eventId`, inbox `sequence`, `receivedAt`, and `duplicate`. Retrying identical content with the same event ID returns the original receipt with `duplicate: true`. Changed content returns 409. A 202 means admission, not successful processing. Reserved `runtime.*` event types and `runtime:` IDs are rejected.
 
-For minimal-bash, the harness explicitly selects running/cancelling/cancelled/failed/idle on lifecycle transitions. Its host writes D1 after local commit, without awaiting publication on the execution path. There are no stored status revisions, inferred statuses or scheduled repair. A failed/lost write may leave display status stale until a later explicit transition. Message pages combine current DO execution state with display `state.status` from the existing D1 routing read; these are not an atomic snapshot. Pagination defaults to `after=0`, `limit=100`; `after` must be a nonnegative integer and `limit` 1–100. Pages may contain fewer rows due to the message-byte budget.
+For both harnesses, the harness explicitly selects running/cancelling/cancelled/failed/idle on lifecycle transitions. Its host writes D1 after local commit, without awaiting publication on the execution path. There are no stored status revisions, inferred statuses or scheduled repair. A failed/lost write may leave display status stale until a later explicit transition. Message pages combine current DO execution state with display `state.status` from the existing D1 routing read; these are not an atomic snapshot. Pagination defaults to `after=0`, `limit=100`; `after` must be a nonnegative integer and `limit` 1–100. Pages may contain fewer rows due to the message-byte budget.
 
 Generic outputs, operation inspection, processing progress, session-info GET, operator runtime run/resume and fixture controls remain unexposed. Minimal-bash cancellation/resume are harness input events, not new administrative endpoints. No output-event store or stream is reintroduced.
 
@@ -101,7 +101,7 @@ Any uncertain failure returns 503 with `Retry-After: 1`. Retrying the **same req
 
 Inputs and transcript reads reject `initializing`, `initialization_failed` and `destroyed` with 409 `SESSION_NOT_READY`. Other statuses do not control execution/admission: the harness's own state machine does. Duplicate creation never resets an already-running session to idle. On a new reservation the successful path uses a lookup, `INSERT ... RETURNING`, DO initialization, then the conditional D1 update; no post-insert reread is needed except when another concurrent request won the reservation.
 
-The route registry contains deployment metadata only. Each harness version owns a fixed namespace/schema. This revision uses `minimal-bash/v7` and requires a new Worker/class/namespace, but keeps the existing D1 schema/database. Input and transcript routing select only `route_key` and `status`, not the full directory row. After the v7 cutover, earlier-version sessions cannot resume through the v7-only route registry. Directory listing still returns retained older rows; it does not rewrite their harness versions or migrate sessions.
+The route registry contains deployment metadata only. Each harness version owns a fixed namespace/schema. Each new harness/version gets a new Worker/class/namespace while keeping the existing D1 schema/database. The new `pi-no-compaction/v1` route adds a separate namespace alongside `minimal-bash/v7`. Input and transcript routing select only `route_key` and `status`, not the full directory row. After the v7 cutover, earlier-version sessions cannot resume through the current route registry. Directory listing still returns retained older rows; it does not rewrite their harness versions or migrate sessions.
 
 ## Harness routing
 
