@@ -6,6 +6,7 @@ export * from "./pi-bash.ts";
 export * from "./pi-read.ts";
 export * from "./pi-write.ts";
 export * from "./pi-edit.ts";
+export * from "./codex-apply-patch.ts";
 export * from "./execution-gateway.ts";
 export type { ContractError, ContractErrorCode } from "./errors.ts";
 export { parseEventBody, parseSubmitInputRequest } from "./input.ts";

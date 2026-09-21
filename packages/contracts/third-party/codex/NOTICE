@@ -1,0 +1,7 @@
+OpenAI Codex
+Copyright 2025 OpenAI
+
+The apply_patch Lark grammar embedded in ../../src/codex-apply-patch.ts
+is copied from codex-rs/core/assets/tools/apply_patch.lark in OpenAI Codex.
+It is distributed under the Apache License, Version 2.0 (see LICENSE).
+The grammar is unchanged; the surrounding TypeScript adapter is new.
