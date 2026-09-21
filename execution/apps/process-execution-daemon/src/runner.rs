@@ -1,7 +1,6 @@
 use crate::{
     Result,
     config::{self, Config},
-    http,
     protocol::{self, Action, Incoming},
     store::{self, Admission, Credential, Journal},
 };
@@ -179,18 +178,12 @@ async fn connections(directory: &Path, credential: &mut Credential, engine: &Eng
         // Revocation, expiry and replacement need user/backend intervention, not
         // a reconnect race that takes a machine back from a newer daemon.
         if let Some(e) = reason.downcast_ref::<tungstenite::Error>()
-            && matches!(e,tungstenite::Error::Http(r) if [401,403,404].contains(&r.status().as_u16()))
+            && matches!(e,tungstenite::Error::Http(r) if [401,403,404,410].contains(&r.status().as_u16()))
         {
-            return Err("machine credential was rejected; register/configure a fresh token before connecting".into());
+            return Err("machine credential was rejected or deleted; configure a valid daemon secret before connecting".into());
         }
         if reason.to_string() == "connection replaced or revoked" {
             return Err(reason);
-        }
-        if http::token_claims(&credential.token).is_err() {
-            return Err(
-                "machine credential expired; obtain a fresh token using register or configure"
-                    .into(),
-            );
         }
         store::status(
             directory,
@@ -215,7 +208,7 @@ async fn connection(directory: &Path, credential: &mut Credential, engine: &Engi
         &credential.gateway_url,
         engine.config.allow_insecure_loopback,
     )?;
-    url.set_path("/v1/connect");
+    url.set_path(&format!("/v1/machines/{}/connect", credential.machine_id));
     url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
         .map_err(|_| "invalid websocket scheme")?;
     let mut request = url.as_str().into_client_request()?;
@@ -252,12 +245,6 @@ async fn connection(directory: &Path, credential: &mut Credential, engine: &Engi
         "Connected to execution gateway",
     )?;
     eprintln!("Connected. Machine {}", credential.machine_id);
-    let ttl = welcome["credentialExpiresAt"]
-        .as_i64()
-        .ok_or("missing credential expiry")?
-        .saturating_sub(store::now())
-        .max(0) as u64;
-    let refresh_at = Instant::now() + Duration::from_millis((ttl * 4 / 5).max(1000));
     let mut tick = time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let mut last_seen = Instant::now();
@@ -301,10 +288,6 @@ async fn connection(directory: &Path, credential: &mut Credential, engine: &Engi
             _=tick.tick()=>{
                 if last_seen.elapsed()>heartbeat*3 {return Err("gateway heartbeat timed out".into());}
                 if last_ping.elapsed()>=heartbeat {socket.send(Message::Text("execution:ping".into())).await?;last_ping=Instant::now();}
-                if Instant::now()>=refresh_at {
-                    http::refresh(directory,credential).await?;
-                    socket.close(None).await?;return Ok(());
-                }
                 if last_sweep.elapsed()>Duration::from_secs(30){engine.journal.sweep(engine.core.generation(),&engine.config)?;last_sweep=Instant::now();}
                 if let Some(delivery)=engine.journal.next()? {
                     // Reserve a retry time before writing; a lost send/ack remains retryable.
