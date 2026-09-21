@@ -32,12 +32,10 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
-    /// Register this machine. Read the trusted-backend token from stdin; never save it.
+    /// Register this machine. Read the management secret from stdin; never save it.
     Register {
         #[arg(long)]
         gateway_url: String,
-        #[arg(long)]
-        user_id: String,
         #[arg(long)]
         name: String,
         #[arg(long)]
@@ -45,12 +43,10 @@ enum Command {
         #[arg(long)]
         allow_insecure_loopback: bool,
     },
-    /// Save an already-issued machine token from stdin.
+    /// Save an already-issued daemon secret from stdin.
     Configure {
         #[arg(long)]
         gateway_url: String,
-        #[arg(long)]
-        user_id: String,
         #[arg(long)]
         machine_id: Uuid,
         #[arg(long)]
@@ -155,7 +151,6 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Register {
             gateway_url,
-            user_id,
             name,
             machine_id,
             allow_insecure_loopback,
@@ -165,7 +160,6 @@ async fn run(cli: Cli) -> Result<()> {
             let credential = http::register(
                 &directory,
                 &gateway_url,
-                &user_id,
                 &name,
                 machine_id,
                 &token,
@@ -174,25 +168,18 @@ async fn run(cli: Cli) -> Result<()> {
             .await?;
             save_local_mode(&directory, allow_insecure_loopback)?;
             println!(
-                "Registered {name}.\nMachine: {}\nRun `connect` to start the daemon.",
+                "Registered {name}.\nMachine: {}\nExecution secret saved in execution-secret.json in the state directory.\nRun `connect` to start the daemon.",
                 credential.machine_id
             );
         }
         Command::Configure {
             gateway_url,
-            user_id,
             machine_id,
             allow_insecure_loopback,
         } => {
             let _lock = store::Lock::acquire(&directory)?;
-            http::credential(
-                &gateway_url,
-                &user_id,
-                machine_id,
-                token()?,
-                allow_insecure_loopback,
-            )?
-            .save(&directory)?;
+            http::credential(&gateway_url, machine_id, token()?, allow_insecure_loopback)?
+                .save(&directory)?;
             save_local_mode(&directory, allow_insecure_loopback)?;
             println!("Configured machine {machine_id}.\nRun `connect` to start the daemon.");
         }
