@@ -25,6 +25,11 @@
   "durable_objects": {
     "bindings": [
       {
+        "name": "PI_NO_COMPACTION_SESSIONS",
+        "class_name": "PiNoCompactionSessionV1",
+        "script_name": "managed-agents-harness-pi-no-compaction-v1"
+      },
+      {
         "name": "MINIMAL_BASH_SESSIONS",
         "class_name": "MinimalBashSessionV7",
         "script_name": "managed-agents-harness-minimal-bash-v7"
