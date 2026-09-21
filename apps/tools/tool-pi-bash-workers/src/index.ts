@@ -2,14 +2,13 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { BashService } from "./service.ts";
 import type { Env } from "./types.ts";
 
-/** Private submission binding; the public handler cannot submit commands. */
 export class PiBash extends WorkerEntrypoint<Env> {
   async submit(value: unknown): Promise<unknown> { return { result: await new BashService(this.env).submit(value) }; }
 }
-/** Bind only the trusted callback router; this entrypoint cannot submit commands. */
+/** Only the execution gateway should bind this private completion entrypoint. */
 export class PiBashCallbacks extends WorkerEntrypoint<Env> {
-  async acceptGatewayEvent(value: unknown): Promise<unknown> {
-    return { receipt: await new BashService(this.env).acceptGatewayEvent(value) };
+  async acceptExecutionResult(value: unknown) {
+    return new BashService(this.env).acceptExecutionResult(value);
   }
 }
 export default {
