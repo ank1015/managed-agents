@@ -8,7 +8,6 @@ export interface SessionNamespace {
 }
 export interface Env extends LogSettings {
   EXECUTION_GATEWAY_URL: string;
-  EXECUTION_GATEWAY_API_KEY: string;
   SESSION_ROUTES: string;
   [binding: string]: unknown;
 }
