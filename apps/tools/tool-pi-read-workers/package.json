@@ -14,7 +14,8 @@
     "@managed-agents/diagnostics": "workspace:*",
     "@managed-agents/contracts": "workspace:*",
     "bmp-ts": "1.0.9",
-    "fast-png": "8.0.0"
+    "fast-png": "8.0.0",
+    "@managed-agents/execution-gateway-protocol": "workspace:*"
   },
   "devDependencies": {
     "@managed-agents/harness-api": "workspace:*",
