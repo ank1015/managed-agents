@@ -78,6 +78,14 @@ The deployment changed the dedicated user's payload setting to v3 without deleti
 The repository configuration also includes `tool-pi-write-v1 → WRITE_EVENTS`, bound
 to `managed-agents-tool-pi-write/PiWriteCallbacks`. Deploy the write worker before
 redeploying this router with that binding. The write receiver was deployed and tested on 2026-09-21; production harness
-adoption remains separate. See the [test report](../../WRITE_PRODUCTION_TEST.md).
+adoption remains separate.
 The router only forwards signed write receipts; it never submits file mutations.
 See the [write worker](../tool-pi-write-workers/README.md) for setup and limits.
+
+## Standalone edit receiver
+
+The repository configuration adds `tool-pi-edit-v1 → EDIT_EVENTS`, bound to
+`managed-agents-tool-pi-edit/PiEditCallbacks`. Deploy the edit worker before
+redeploying the router with this binding. This receiver was deployed and verified on 2026-09-21. It normalizes protocol-v5 patch receipts,
+including failed jobs carrying structured rejection/partial results. Production
+harness adoption is separate. See the [edit worker](../tool-pi-edit-workers/README.md).
