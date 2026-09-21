@@ -15,6 +15,13 @@ The execution subsystem is split by responsibility, not by user/account ownershi
 The Worker and TypeScript package belong to the repository's pnpm workspace.
 The daemon and core belong to the Cargo workspace rooted here.
 
+## Deployment and releases
+
+See [deployment and release setup](DEPLOYMENT.md) for the daemon release Action, direct
+Worker deployment, required secrets and the daemon's isolated R2 update feed.
+R2 hosts downloadable binaries; the daemon runs on the registered machine, not
+inside R2. The gateway API and `Machine` DO class deploy together as one Worker.
+
 ## Verification
 
 ```sh
