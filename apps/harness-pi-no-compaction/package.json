@@ -10,10 +10,12 @@
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
     "test": "node --test test/*.test.ts"
   },
-  "dependencies": { "@managed-agents/diagnostics": "workspace:*",
+  "dependencies": {
+    "@managed-agents/diagnostics": "workspace:*",
     "@managed-agents/harness-pi-no-compaction": "workspace:*",
     "@managed-agents/contracts": "workspace:*",
-    "@managed-agents/session-runtime": "workspace:*"
+    "@managed-agents/session-runtime": "workspace:*",
+    "@managed-agents/session-execution": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260910.1",
