@@ -7,9 +7,9 @@ export function object(value: unknown): Record<string, JsonValue> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected an object.");
   return value as Record<string, JsonValue>;
 }
-export function editError(context: Pick<EditContext, "machineId" | "path">, code: string, message: string, jobId?: string): EditResult {
+export function editError(context: Pick<EditContext, "machineId" | "path">, code: string, message: string, requestId?: string): EditResult {
   return { content: [{ type: "text", text: message }], isError: true,
-    details: { ...(jobId === undefined ? {} : { gatewayJobId: jobId }), machineId: context.machineId, path: context.path, error: { code, message } } };
+    details: { ...(requestId === undefined ? {} : { requestId: requestId }), machineId: context.machineId, path: context.path, error: { code, message } } };
 }
 export function requestTooLarge(context: Pick<EditContext, "machineId" | "path">): EditResult {
   return editError(context, "EDIT_REQUEST_TOO_LARGE", "Edit request is too big. Serialized patch parameters must be at most 4 MiB. No edit was submitted.");
@@ -34,7 +34,7 @@ function change(value: unknown): EditFileChange {
     ...(r.first_changed_line === null ? {} : { firstChangedLine: r.first_changed_line as number }) };
 }
 /** The native runtime owns matching; signed job context and mutation ID bind its receipt to this input. */
-export async function formatReceipt(value: unknown, context: EditContext, jobId: string): Promise<EditResult> {
+export async function formatReceipt(value: unknown, context: EditContext, requestId: string): Promise<EditResult> {
   const r = object(value);
   if (r.mutation_id !== await editIdentity(context.submissionId)
     || !["applied", "rejected", "partial"].includes(r.status as string)
@@ -63,7 +63,7 @@ export async function formatReceipt(value: unknown, context: EditContext, jobId:
   const firstChangedLine = changes[0]?.firstChangedLine;
   return { content: [{ type: "text", text: error?.message ?? `Successfully replaced ${context.editCount} block(s) in ${context.path}.` }],
     isError: status !== "applied", details: {
-      gatewayJobId: jobId, machineId: context.machineId, path: context.path,
+      requestId: requestId, machineId: context.machineId, path: context.path,
       mutationId: r.mutation_id as string, status, changesExact: r.changes_exact, changes,
       // Gateway provides a bounded unified display diff, not Pi's numbered renderer.
       diff: r.diff, patch: r.diff, diffTruncated: r.diff_truncated,
