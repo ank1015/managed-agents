@@ -32,7 +32,7 @@ pub struct Incoming {
     pub request_hash: String,
     pub runtime_generation: Uuid,
     pub operation: Value,
-    pub return_ticket: String,
+    pub routing_envelope: String,
 }
 pub enum Action {
     Cancel(String),
@@ -71,8 +71,8 @@ impl Incoming {
             || self.protocol_version != 1
             || !identity(&self.request_id)
             || !digest(&self.request_hash)
-            || self.return_ticket.len() > 32768
-            || self.return_ticket.is_empty()
+            || self.routing_envelope.len() > 32768
+            || self.routing_envelope.is_empty()
         {
             return Err("invalid request envelope".into());
         }
