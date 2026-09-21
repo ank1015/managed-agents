@@ -7,7 +7,7 @@ import type { Miniflare } from "miniflare";
 import type { CreateSessionResult, InputReceipt, ListSessionsResult } from "@managed-agents/contracts";
 import { LOCAL_BACKEND_TOKEN, startLocalStack } from "./local-stack.ts";
 
-const config = { provider: "openai", modelId: "gpt-5.6-sol", accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", cwd: "/workspace" };
+const config = { provider: "openai", modelId: "gpt-5.6-sol", accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", executionToken: `me1.22222222-2222-4222-8222-222222222222.1.${"x".repeat(43)}`, cwd: "/workspace" };
 let app: Miniflare;
 before(async () => { app = await startLocalStack({ testHost: true }); });
 after(async () => { await app?.dispose(); });
@@ -161,4 +161,33 @@ test("HTTP errors, body limits and missing credentials fail closed", async () =>
     const host = await unconfigured.getWorker("managed-agents-harness-minimal-bash-v7");
     assert.equal((await host.fetch("https://host/fixtures/anything")).status, 404);
   } finally { await unconfigured.dispose(); }
+});
+
+test("execution credentials are immutable harness config, not generic API fields or update routes", async () => {
+  const path = await mkdtemp(join(tmpdir(), "agent-api-config-"));
+  let instance = await startLocalStack({ persistPath: path });
+  const replacement = config.executionToken.slice(0, -43) + "y".repeat(43);
+  try {
+    const created = await create(instance, "credentials"), id = created.session.identity.sessionId;
+    assert.ok(!JSON.stringify(created).includes(config.executionToken));
+    await request(instance, "/v1/sessions", "POST", { ...createBody("old-envelope"), execution: { token: config.executionToken } }, 400);
+    await request(instance, sessionPath(id, "execution"), "PATCH", { token: replacement, expectedRevision: 1 }, 404);
+    await request(instance, sessionPath(id, "execution"), "GET", undefined, 404);
+    await create(instance, "credentials", { ...config, executionToken: replacement }, 409);
+    await instance.dispose(); instance = await startLocalStack({ persistPath: path });
+    assert.deepEqual(await create(instance, "credentials", config, 200), { ...created, duplicate: true });
+    const { executionToken: omitted, ...missingToken } = config;
+    for (const [index, bad] of [missingToken, { ...config, executionToken: "invalid" },
+      { ...config, executionToken: config.executionToken.replace("me1.", "md1.") },
+      { ...config, machineId: "33333333-3333-4333-8333-333333333333" }].entries()) {
+      const rejected = await request(instance, "/v1/sessions", "POST", createBody("invalid-secret-" + index, bad), 400);
+      assert.equal((rejected.error as { code: string }).code, "INVALID_CONFIG");
+      assert.ok(!JSON.stringify(rejected).includes(config.executionToken));
+    }
+    const rows = await (await directory(instance)).prepare("SELECT * FROM sessions").all();
+    const page = await request(instance, sessionPath(id, "messages"));
+    for (const serialized of [JSON.stringify(rows), JSON.stringify(page), JSON.stringify(await request(instance, "/v1/sessions"))]) {
+      assert.ok(!serialized.includes(config.executionToken)); assert.ok(!serialized.includes(replacement));
+    }
+  } finally { await instance.dispose(); await rm(path, { recursive: true, force: true }); }
 });

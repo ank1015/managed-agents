@@ -36,6 +36,7 @@ export async function startLocalStack(options: StackOptions = {}): Promise<Minif
   };
   const host = {
     name: hostName, modules: true, script: hostScript, compatibilityDate: hostConfig.compatibility_date as string,
+    bindings: { EXECUTION_GATEWAY_URL: "https://gateway.test" }, outboundService: { name: "operations" },
     d1Databases: api.d1Databases,
     serviceBindings: { LLM: { name: "operations", entrypoint: "FakeOperations" }, BASH: { name: "operations", entrypoint: "FakeOperations" } },
     durableObjects: Object.fromEntries(hostConfig.durable_objects.bindings.map((b: { name: string; class_name: string }) => {
