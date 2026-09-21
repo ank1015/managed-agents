@@ -26,7 +26,6 @@ pub fn now() -> i64 {
 #[serde(deny_unknown_fields)]
 pub struct Credential {
     pub gateway_url: String,
-    pub user_id: String,
     pub machine_id: Uuid,
     pub token: String,
 }
@@ -40,9 +39,7 @@ impl Credential {
     pub fn save(&self, path: &Path) -> Result<()> {
         if path.join("credential.json").exists() {
             let old = Self::load(path)?;
-            if (old.machine_id, &old.user_id, &old.gateway_url)
-                != (self.machine_id, &self.user_id, &self.gateway_url)
-            {
+            if (old.machine_id, &old.gateway_url) != (self.machine_id, &self.gateway_url) {
                 return Err("this state directory belongs to another machine or gateway; use a separate --state-dir".into());
             }
         }
@@ -178,8 +175,8 @@ impl Journal {
             if state == "expired" {
                 return Ok(Admission::Expired);
             }
-            // A refreshed return ticket may repair expired delivery authorization.
-            tx.execute("UPDATE requests SET ticket=?, next_attempt=0, state=CASE WHEN state IN ('delivered','quarantined') THEN 'pending' ELSE state END, reason=NULL WHERE key=?", params![req.return_ticket, req.key()])?;
+            // An identical resubmission may replace its signed routing envelope.
+            tx.execute("UPDATE requests SET ticket=?, next_attempt=0, state=CASE WHEN state IN ('delivered','quarantined') THEN 'pending' ELSE state END, reason=NULL WHERE key=?", params![req.routing_envelope, req.key()])?;
             tx.commit()?;
             return Ok(Admission::Duplicate);
         }
@@ -196,7 +193,7 @@ impl Journal {
             runtime_generation: req.runtime_generation,
             native,
         };
-        tx.execute("INSERT INTO requests(key,hash,input_hash,metadata,ticket,state,created,bytes) VALUES(?,?,?,?,?,'active',?,?)", params![req.key(),req.request_hash,input_hash,serde_json::to_string(&metadata)?,req.return_ticket,now(),MAX_RESULT as u64])?;
+        tx.execute("INSERT INTO requests(key,hash,input_hash,metadata,ticket,state,created,bytes) VALUES(?,?,?,?,?,'active',?,?)", params![req.key(),req.request_hash,input_hash,serde_json::to_string(&metadata)?,req.routing_envelope,now(),MAX_RESULT as u64])?;
         tx.commit()?;
         Ok(Admission::New)
     }
@@ -234,7 +231,7 @@ impl Journal {
     pub fn next(&self) -> Result<Option<Delivery>> {
         let db = self.db.lock().unwrap();
         let row: Option<(String,String,String,String,u32)> = db.query_row("SELECT key,ticket,outcome,delivery_id,attempts FROM requests WHERE state='pending' AND next_attempt<=? ORDER BY next_attempt,created LIMIT 1", [now()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
-        row.map(|(key,ticket,outcome,id,attempts)| Ok(Delivery { key, attempts, frame:json!({"type":"result","returnTicket":ticket,"outcome":serde_json::from_str::<Value>(&outcome)?,"deliveryId":id}) })).transpose()
+        row.map(|(key,ticket,outcome,id,attempts)| Ok(Delivery { key, attempts, frame:json!({"type":"result","routingEnvelope":ticket,"outcome":serde_json::from_str::<Value>(&outcome)?,"deliveryId":id}) })).transpose()
     }
     pub fn attempted(&self, key: &str, delay_ms: u64) -> Result<()> {
         self.db.lock().unwrap().execute("UPDATE requests SET attempts=attempts+1,next_attempt=?,first_sent=COALESCE(first_sent,?) WHERE key=? AND state='pending'", params![now().saturating_add(delay_ms.min(i64::MAX as u64) as i64), now(), key])?;
@@ -318,7 +315,7 @@ fn millis(seconds: u64) -> i64 {
 mod tests {
     use super::*;
     fn request(generation: Uuid) -> Incoming {
-        serde_json::from_value(json!({"type":"request","protocolVersion":1,"dispatchId":Uuid::new_v4(),"requestId":"one","requestHash":"a".repeat(64),"runtimeGeneration":generation,"operation":{"operation":"runtime.capabilities","params":{}},"returnTicket":"saved-ticket"})).unwrap()
+        serde_json::from_value(json!({"type":"request","protocolVersion":1,"dispatchId":Uuid::new_v4(),"requestId":"one","requestHash":"a".repeat(64),"runtimeGeneration":generation,"operation":{"operation":"runtime.capabilities","params":{}},"routingEnvelope":"saved-ticket"})).unwrap()
     }
     #[test]
     fn crash_recovery_does_not_rerun_and_requires_matching_ack() {
