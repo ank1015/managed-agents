@@ -278,6 +278,34 @@ importers:
         specifier: 4.116.0
         version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
 
+  apps/tool-pi-write-workers:
+    dependencies:
+      '@managed-agents/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@managed-agents/diagnostics':
+        specifier: workspace:*
+        version: link:../../packages/diagnostics
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20260910.1
+        version: 5.20260910.1
+      '@managed-agents/harness-api':
+        specifier: workspace:*
+        version: link:../../packages/harness-api
+      '@managed-agents/session-runtime':
+        specifier: workspace:*
+        version: link:../../packages/session-runtime
+      esbuild:
+        specifier: 0.27.3
+        version: 0.27.3
+      miniflare:
+        specifier: 4.20260730.0
+        version: 4.20260730.0
+      wrangler:
+        specifier: 4.116.0
+        version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
+
   packages/contracts: {}
 
   packages/diagnostics: {}
