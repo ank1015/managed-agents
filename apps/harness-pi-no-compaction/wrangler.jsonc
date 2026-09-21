@@ -1,0 +1,67 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "managed-agents-harness-pi-no-compaction-v1",
+  "account_id": "62fc73035acad6807728e4385fc03df0",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-30",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "invocation_logs": false
+    }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PI_NO_COMPACTION_SESSIONS",
+        "class_name": "PiNoCompactionSessionV1"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "PiNoCompactionSessionV1"
+      ]
+    }
+  ],
+  "services": [
+    {
+      "binding": "LLM",
+      "service": "managed-agents-llm-gateway",
+      "entrypoint": "LlmGateway"
+    },
+    {
+      "binding": "BASH",
+      "service": "managed-agents-tool-pi-bash",
+      "entrypoint": "PiBash"
+    },
+    {
+      "binding": "READ",
+      "service": "managed-agents-tool-pi-read",
+      "entrypoint": "PiRead"
+    },
+    {
+      "binding": "EDIT",
+      "service": "managed-agents-tool-pi-edit",
+      "entrypoint": "PiEdit"
+    },
+    {
+      "binding": "WRITE",
+      "service": "managed-agents-tool-pi-write",
+      "entrypoint": "PiWrite"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "SESSION_DIRECTORY",
+      "database_name": "managed-agents-session-directory-v2",
+      "database_id": "f3073080-5ca3-44f1-9466-ae5fe6524fff",
+      "migrations_dir": "../agent-api/migrations"
+    }
+  ]
+}

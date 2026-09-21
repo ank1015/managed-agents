@@ -188,6 +188,34 @@ importers:
         specifier: 4.116.0
         version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
 
+  apps/harness-pi-no-compaction:
+    dependencies:
+      '@managed-agents/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@managed-agents/diagnostics':
+        specifier: workspace:*
+        version: link:../../packages/diagnostics
+      '@managed-agents/harness-pi-no-compaction':
+        specifier: workspace:*
+        version: link:../../packages/harness-pi-no-compaction
+      '@managed-agents/session-runtime':
+        specifier: workspace:*
+        version: link:../../packages/session-runtime
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20260910.1
+        version: 5.20260910.1
+      esbuild:
+        specifier: 0.27.3
+        version: 0.27.3
+      miniflare:
+        specifier: 4.20260730.0
+        version: 4.20260730.0
+      wrangler:
+        specifier: 4.116.0
+        version: 4.116.0(@cloudflare/workers-types@5.20260910.1)
+
   apps/llm-gateway-workers:
     dependencies:
       '@managed-agents/contracts':
@@ -348,6 +376,22 @@ importers:
         version: link:../contracts
 
   packages/harness-minimal-bash:
+    dependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20260910.1
+        version: 5.20260910.1
+      '@managed-agents/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@managed-agents/harness-api':
+        specifier: workspace:*
+        version: link:../harness-api
+    devDependencies:
+      '@managed-agents/session-runtime':
+        specifier: workspace:*
+        version: link:../session-runtime
+
+  packages/harness-pi-no-compaction:
     dependencies:
       '@cloudflare/workers-types':
         specifier: 5.20260910.1
