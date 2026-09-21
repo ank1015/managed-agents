@@ -9,20 +9,47 @@
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
-    "logs": { "invocation_logs": false }
+    "logs": {
+      "invocation_logs": false
+    }
   },
   "durable_objects": {
-    "bindings": [{ "name": "MINIMAL_BASH_SESSIONS", "class_name": "MinimalBashSessionV7" }]
+    "bindings": [
+      {
+        "name": "MINIMAL_BASH_SESSIONS",
+        "class_name": "MinimalBashSessionV7"
+      }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MinimalBashSessionV7"] }],
-  "services": [
-    { "binding": "LLM", "service": "managed-agents-llm-gateway", "entrypoint": "LlmGateway" },
-    { "binding": "BASH", "service": "managed-agents-tool-pi-bash", "entrypoint": "PiBash" }
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "MinimalBashSessionV7"
+      ]
+    }
   ],
-  "d1_databases": [{
-    "binding": "SESSION_DIRECTORY",
-    "database_name": "managed-agents-session-directory-v2",
-    "database_id": "f3073080-5ca3-44f1-9466-ae5fe6524fff",
-    "migrations_dir": "../agent-api/migrations"
-  }]
+  "services": [
+    {
+      "binding": "LLM",
+      "service": "managed-agents-llm-gateway",
+      "entrypoint": "LlmGateway"
+    },
+    {
+      "binding": "BASH",
+      "service": "managed-agents-tool-pi-bash",
+      "entrypoint": "PiBash"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "SESSION_DIRECTORY",
+      "database_name": "managed-agents-session-directory-v2",
+      "database_id": "f3073080-5ca3-44f1-9466-ae5fe6524fff",
+      "migrations_dir": "../agent-api/migrations"
+    }
+  ],
+  "vars": {
+    "EXECUTION_GATEWAY_URL": "https://execution-api.acentric.dev"
+  }
 }
