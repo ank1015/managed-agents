@@ -1,0 +1,7 @@
+# Generate three independent secrets, each at least 32 random bytes.
+MANAGEMENT_SECRET=replace-with-a-long-random-management-secret
+CREDENTIAL_SIGNING_SECRET=replace-with-a-long-random-credential-issuance-secret
+ROUTING_SIGNING_SECRET=replace-with-a-long-random-routing-secret
+# Keep CREDENTIAL_SIGNING_SECRET stable for retry-safe registration and rotation.
+# Keep the previous routing key while daemon outboxes still contain its envelopes.
+# ROUTING_PREVIOUS_SIGNING_SECRET=previous-routing-secret
