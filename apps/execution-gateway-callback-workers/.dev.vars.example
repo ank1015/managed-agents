@@ -1,3 +1,0 @@
-EXECUTION_GATEWAY_WEBHOOK_SECRET=replace-with-dedicated-gateway-users-webhook-secret
-# Optional during rotation:
-# EXECUTION_GATEWAY_PREVIOUS_WEBHOOK_SECRET=previous-secret
