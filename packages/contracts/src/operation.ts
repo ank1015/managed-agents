@@ -42,21 +42,11 @@ export interface ProviderSubmission extends OperationCorrelation {
   request: OperationRequest;
 }
 
-export interface ProviderStatusQuery extends OperationCorrelation {
-  jobId: string;
-}
-
 export type ProviderSubmitResult =
   /** The worker durably owns execution and recovery; the session may discard its input. */
   | { status: "accepted"; jobId: string }
   | { status: "completed"; jobId: string; outcome: OperationOutcome }
   | { status: "rejected"; error: OperationFailure };
-
-export type ProviderStatusResult =
-  | { status: "pending" }
-  | { status: "completed"; outcome: OperationOutcome }
-  /** A recovery/contract error for an accepted job; never authorizes resubmission. */
-  | { status: "missing" };
 
 /** RPC adds disposal metadata to the outer object; keep JSON data in a nested field. */
 export interface ProviderSubmitReply { result: ProviderSubmitResult }
@@ -126,14 +116,6 @@ export function parseProviderSubmission(value: unknown): ProviderSubmission {
   };
 }
 
-export function parseProviderStatusQuery(value: unknown): ProviderStatusQuery {
-  const r = record(parseJsonValue(value), ["operationId", "submissionId", "jobId"], "status query");
-  return {
-    operationId: nonemptyString(r.operationId, "operationId"), submissionId: nonemptyString(r.submissionId, "submissionId"),
-    jobId: nonemptyString(r.jobId, "jobId"),
-  };
-}
-
 export function parseOperationFailure(value: unknown): OperationFailure {
   const r = record(parseJsonValue(value), ["code", "message", "details"], "error");
   return {
@@ -185,17 +167,6 @@ export function parseProviderSubmitResult(value: unknown): ProviderSubmitResult 
       return { status: "rejected", error: parseOperationFailure(r.error) };
   }
   throw new ContractException("INVALID_REQUEST", "Invalid provider submission result.");
-}
-
-export function parseProviderStatusResult(value: unknown): ProviderStatusResult {
-  const json = parseJsonValue(value);
-  const r = record(json, ["status", "outcome"], "status result");
-  if (r.status === "completed") return { status: "completed", outcome: parseJobOutcome(r.outcome) };
-  if (r.status === "pending" || r.status === "missing") {
-    record(json, ["status"], "status result");
-    return { status: r.status };
-  }
-  throw new ContractException("INVALID_REQUEST", "Invalid provider status result.");
 }
 
 function parseJobOutcome(value: unknown): OperationOutcome {

@@ -44,7 +44,7 @@ export function parseCreateSessionRequest(value: unknown): CreateSessionRequest 
 
 /** Structured trusted-binding protocol. Each action validates its own payload. */
 export type SessionCommand =
-  | { action: "initialize" | "appendInput" | "acceptCompletion"; value: unknown }
+  | { action: "initialize" | "appendInput" | "acceptCompletion" | "acceptToolCompletion"; value: unknown }
   | { action: "getMessages" | "getPendingMessages"; value: MessagePageQuery }
   | { action: "getSession" | "getProgress" };
 export interface MessagePageQuery { after: number; limit: number }
@@ -76,7 +76,7 @@ export function parseSessionCommand(value: unknown): SessionCommand {
     case "getSession": case "getProgress":
       if (Object.hasOwn(command, "value")) throw new ContractException("INVALID_REQUEST", "Unexpected command value.");
       return { action: command.action };
-    case "initialize": case "appendInput": case "acceptCompletion":
+    case "initialize": case "appendInput": case "acceptCompletion": case "acceptToolCompletion":
       if (!Object.hasOwn(command, "value")) throw new ContractException("INVALID_REQUEST", "Missing command value.");
       return { action: command.action, value: command.value! };
     default: throw new ContractException("INVALID_REQUEST", "Unknown session command.");
