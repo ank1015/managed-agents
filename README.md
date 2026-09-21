@@ -24,7 +24,6 @@ pnpm check
 - [Pi-style bash operation worker](apps/tool-pi-bash-workers/README.md)
 - [Pi-style read operation worker (standalone)](apps/tool-pi-read-workers/README.md)
 - [Pi-style write operation worker (standalone)](apps/tool-pi-write-workers/README.md)
-- [Write worker production verification](WRITE_PRODUCTION_TEST.md)
 - [Execution callback router](apps/execution-gateway-callback-workers/README.md)
 - [Logging policy](packages/diagnostics/README.md)
 
