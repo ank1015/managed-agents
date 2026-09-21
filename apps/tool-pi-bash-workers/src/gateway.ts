@@ -127,7 +127,7 @@ export function terminalOutcome(job: Pick<Job, "id" | "status" | "machineId" | "
     return failure(job.id, error.code.slice(0, 200), error.message.slice(0, 1000));
   }
   const response = object(responseValue);
-  if (response.protocol_version !== 4 || response.request_id !== job.id || response.generation_id !== job.runtimeGenerationId) throw new Error("Invalid execution response correlation/version.");
+  if ((response.protocol_version !== 4 && response.protocol_version !== 5) || response.request_id !== job.id || response.generation_id !== job.runtimeGenerationId) throw new Error("Invalid execution response correlation/version.");
   if (response.status === "error" && job.status === "failed") {
     const error = object(response.error);
     if (typeof error.code !== "string" || !error.code || typeof error.message !== "string" || !error.message) throw new Error("Invalid operation error.");

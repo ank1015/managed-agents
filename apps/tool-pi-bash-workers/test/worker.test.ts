@@ -186,7 +186,7 @@ test("known execution errors are tool results; gateway, protocol and unknown fai
       if (reason === "failed" || reason === "unknown") stack.gateway.finish(job, reason);
       else if (reason === "protocol") {
         stack.gateway.finish(job, "failed"); job.error = null;
-        job.response = { protocol_version: 4, request_id: job.id, generation_id: job.runtimeGenerationId,
+        job.response = { protocol_version: 5, request_id: job.id, generation_id: job.runtimeGenerationId,
           status: "error", error: { code: "invalid_argument", message: "Invalid execution" } };
       } else stack.gateway.finish(job, "succeeded", runResult(job.idempotencyKey, "output", reason, 7));
       if (reason === "failed") job.runtimeGenerationId = null; // Failure before machine dispatch.
@@ -270,4 +270,44 @@ test("bash deployment has no persistence/queue/cron or diagnostic RPC", async ()
   assert.match(config, /"crons":\s*\[\]/);
   const source = await readFile(new URL("../src/index.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /async (get|queue|scheduled)\(/);
+});
+
+
+test("v4 and v5 callbacks and terminal replay preserve success/error semantics; unsupported versions reject", async () => {
+  const stack = await startStack();
+  try {
+    for (const version of [4, 5]) {
+      for (const failed of [false, true]) {
+        const { sessionId, job } = await start(stack);
+        stack.gateway.finish(job);
+        if (failed) {
+          job.status = "failed";
+          job.response = { protocol_version: version, request_id: job.id, generation_id: job.runtimeGenerationId,
+            status: "error", error: { code: "invalid_argument", message: "Known native error" } };
+        } else job.response = { ...(job.response as object), protocol_version: version };
+        const request = { destination: { routeKey: "test-v1", sessionId }, submission: {
+          operationId: job.clientContext.operationId, submissionId: job.clientContext.submissionId,
+          request: { provider: "tool-pi-bash", type: "bash", version: "v1", input } } };
+        const notification = event(job);
+        for (const unsupported of [3, 6, "5", null]) {
+          const response: { protocol_version: number | string | null } = { ...(job.response as object), protocol_version: unsupported };
+          assert.equal((await stack.callbacks.fetch(url, signed({ ...notification, response }))).status, 503);
+          stack.gateway.detailValue = row => ({ ...row, response });
+          await assert.rejects(stack.call("/submit", request));
+        }
+        stack.gateway.detailValue = undefined;
+        assert.equal((await stack.call("/snapshot", { sessionId })).admittedCompletions, 0);
+        assert.equal((await stack.callbacks.fetch(url, signed(notification))).status, 204);
+        const value = (await completed(stack, sessionId)).operations[0].outcome;
+        assert.equal(value.status, failed ? "failed" : "succeeded");
+        if (failed) assert.equal(value.error.code, "invalid_argument");
+        else assert.equal(value.result.isError, false);
+        const replay = await stack.call("/submit", request);
+        assert.equal(replay.status, "completed");
+        if (replay.status !== "completed") throw new Error("Expected terminal replay");
+        assert.deepEqual(replay.outcome, value);
+      }
+    }
+    assert.equal(stack.gateway.jobs.size, 4);
+  } finally { await stack.app.dispose(); }
 });

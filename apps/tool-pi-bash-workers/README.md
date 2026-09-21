@@ -136,3 +136,12 @@ Do not delete old remote databases/Queues as part of deployment. They remain ava
 ## Checks
 
 `pnpm --filter @managed-agents/tool-pi-bash-workers check` runs typechecks, Pi-formatting tests, real workerd RPC/SQLite integration with production router+tool code and no adapter D1/Queue bindings, and a dry-run build. Coverage includes early/concurrent/duplicate callbacks, signed result tampering, terminal replay, command/gateway failures, lost receipts, restart and deadline expiry. Full-stack harness tests assert zero LLM and execution result GETs on the callback path. No live command, deployment or gateway-user mutation is performed by checks.
+
+## Execution protocol compatibility
+
+Callbacks and terminal job replay accept numeric execution protocol versions **4
+and 5**, preserving retained v4 jobs during the v5 rollout. Other versions and
+malformed version fields are rejected; job, runtime generation and tool-specific
+receipt validation still apply. This is independent of the signed webhook's
+`schemaVersion: 3`. Requests use the existing gateway operation envelope, which
+leaves native protocol-version selection to the gateway.

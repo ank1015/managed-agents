@@ -62,7 +62,7 @@ export class FakeGateway {
   }
   finish(job: FakeJob, status = "succeeded", value: unknown = runResult(job.idempotencyKey)) {
     job.status = status;
-    job.response = status === "succeeded" ? { protocol_version: 4, request_id: job.id, generation_id: generationId, status: "ok", result: value } : null;
+    job.response = status === "succeeded" ? { protocol_version: 5, request_id: job.id, generation_id: generationId, status: "ok", result: value } : null;
     job.error = status === "failed" ? { code: "dispatch_timeout", message: "Machine did not dispatch" } : status === "unknown" ? { code: "receipt_missing", message: "Lost response" } : null;
   }
 }
