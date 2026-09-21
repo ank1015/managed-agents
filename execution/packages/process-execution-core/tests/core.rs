@@ -609,6 +609,7 @@ async fn repl_output_is_bounded_and_helpers_read_patch_and_emit_json() {
     f.core.shutdown().await.unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn dropping_idle_runtime_kills_interpreters() {
     let f = Fixture::new();
@@ -621,7 +622,6 @@ async fn dropping_idle_runtime_kills_interpreters() {
         .await;
     let pid: u32 = output(&result).trim().parse().unwrap();
     drop(f.core);
-    #[cfg(unix)]
     tokio::time::timeout(Duration::from_secs(3), async {
         while unsafe { libc::kill(pid as i32, 0) } == 0 {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -663,13 +663,13 @@ async fn local_modules_async_rejection_and_unicode_cells_work() {
     f.core.shutdown().await.unwrap();
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn dropping_runtime_kills_yielded_commands() {
     let f = Fixture::new();
     let result=f.call("pid","execution.exec",json!({"command":{"type":"shell","script":"echo $$; sleep 30"},"completion":{"mode":"yield","wait_ms":250}})).await.unwrap();
     let pid: u32 = result["output"].as_str().unwrap().trim().parse().unwrap();
     drop(f.core);
-    #[cfg(unix)]
     tokio::time::timeout(Duration::from_secs(3), async {
         while unsafe { libc::kill(pid as i32, 0) } == 0 {
             tokio::time::sleep(Duration::from_millis(10)).await;
