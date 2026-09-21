@@ -5,10 +5,10 @@ import type { Env } from "./types.ts";
 export class PiRead extends WorkerEntrypoint<Env> {
   async submit(value: unknown): Promise<unknown> { return { result: await new ReadService(this.env).submit(value) }; }
 }
-/** Only the trusted signature-verifying execution callback router may bind this entrypoint. */
+/** Only the execution gateway should bind this private completion entrypoint. */
 export class PiReadCallbacks extends WorkerEntrypoint<Env> {
-  async acceptGatewayEvent(value: unknown): Promise<unknown> {
-    return { receipt: await new ReadService(this.env).acceptGatewayEvent(value) };
+  async acceptExecutionResult(value: unknown) {
+    return new ReadService(this.env).acceptExecutionResult(value);
   }
 }
 export default {
