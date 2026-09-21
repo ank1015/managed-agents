@@ -7,9 +7,9 @@ export function object(value: unknown): Record<string, JsonValue> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected an object.");
   return value as Record<string, JsonValue>;
 }
-export function applyPatchError(context: Pick<ApplyPatchContext, "machineId">, code: string, message: string, jobId?: string): ApplyPatchResult {
+export function applyPatchError(context: Pick<ApplyPatchContext, "machineId">, code: string, message: string, requestId?: string): ApplyPatchResult {
   return { content: [{ type: "text", text: message }], isError: true,
-    details: { ...(jobId === undefined ? {} : { gatewayJobId: jobId }), machineId: context.machineId, error: { code, message } } };
+    details: { ...(requestId === undefined ? {} : { requestId: requestId }), machineId: context.machineId, error: { code, message } } };
 }
 export function requestTooLarge(context: Pick<ApplyPatchContext, "machineId">): ApplyPatchResult {
   return applyPatchError(context, "APPLY_PATCH_REQUEST_TOO_LARGE", "Patch request is too big. Patch text must be at most 2 MiB and serialized patch parameters at most 4 MiB. No patch was submitted.");
@@ -68,7 +68,7 @@ function summary(changes: ApplyPatchFileChange[], success: boolean) {
   return { text, truncated: false };
 }
 /** The native runtime owns parsing/matching; signed context and mutation identity bind the receipt. */
-export async function formatReceipt(value: unknown, context: ApplyPatchContext, jobId: string): Promise<ApplyPatchResult> {
+export async function formatReceipt(value: unknown, context: ApplyPatchContext, requestId: string): Promise<ApplyPatchResult> {
   const r = object(value);
   if (r.mutation_id !== await applyPatchIdentity(context.submissionId)
     || !["applied", "rejected", "partial"].includes(r.status as string)
@@ -95,7 +95,7 @@ export async function formatReceipt(value: unknown, context: ApplyPatchContext, 
   const text = status === "applied" ? report.text : status === "rejected" ? error!.message
     : `The patch did not finish and files may have changed. Inspect the affected files before attempting another patch. ${error!.message}\n${changes.length ? report.text : "No committed file changes could be confirmed.\n"}`;
   return { content: [{ type: "text", text }], isError: status !== "applied", details: {
-    gatewayJobId: jobId, machineId: context.machineId, mutationId: r.mutation_id as string,
+    requestId, machineId: context.machineId, mutationId: r.mutation_id as string,
     status, changesExact: r.changes_exact, changes, diff: r.diff, diffTruncated: r.diff_truncated,
     summaryTruncated: report.truncated, ...(error ? { error } : {}),
   } };
