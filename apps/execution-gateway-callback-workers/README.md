@@ -52,9 +52,12 @@ Bash sends host-owned context with receiver, routeKey, sessionId, operationId, s
 - Optional `EXECUTION_GATEWAY_PREVIOUS_WEBHOOK_SECRET` for rotation.
 - `CALLBACK_ROUTES`: receiver key → existing service-binding name.
 - `BASH_EVENTS`: private `PiBashCallbacks` entrypoint on the bash worker.
+- `READ_EVENTS`: private `PiReadCallbacks` entrypoint on the standalone read worker, deployed and tested on 2026-09-21.
 - Existing public domain `execution-callbacks.acentric.dev`; Workers.dev/preview URLs remain disabled.
 
 No gateway API key, DO namespace, D1 database or Queue binding is required. The cron list is explicitly empty.
+
+The deployed allowlist includes `tool-pi-bash-v1` and `tool-pi-read-v1`. The [read worker](../tool-pi-read-workers/README.md) was deployed before the added service binding. This adds receiver routing only; no production harness advertises read yet. The read adapter checks its own paging/file context and uploads images before admitting a completion.
 
 ## Deployment and breaking rollout
 

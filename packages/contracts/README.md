@@ -14,6 +14,7 @@ Transport-neutral contracts for managed agent sessions and durable operations (S
 | `operation.ts` | Operation definitions/requests, submission/callback correlation, provider submit/status DTOs, outcomes, completion events and receipts |
 | `llm.ts` | `llm/generate/v1`, typed messages/tools/fresh and continuation inputs, full assistant responses, private LLM worker submission/destination and binding |
 | `pi-bash.ts` | `tool-pi-bash/bash/v1`, Pi model-facing tool definition, command/timeout plus harness-supplied machine/cwd, formatted result/file/truncation details, private worker submission and binding |
+| `pi-read.ts` | `tool-pi-read/read/v1`, Pi path/offset/limit tool schema, host-supplied machine/cwd, bounded text or image URL result, private worker submission and binding |
 | `execution-gateway.ts` | Shared callback routing context, strict v3 inline terminal events, correlated durable admission receipts and callback-only private binding |
 
 Event types do not establish the authority of the producer. The API must authorize each admission path.
@@ -68,6 +69,8 @@ The [LLM operation worker](../../apps/llm-gateway-workers/README.md) implements 
 Its signed gateway callback now requires `schemaVersion: 2` and inline `response`/`error`, normalized by the worker without a result GET. Terminal submission replay still fetches job detail. Public runtime `OperationCompletion` and receipt contracts are unchanged.
 
 The [Pi-style bash worker](../../apps/tool-pi-bash-workers/README.md) implements the same provider contract through `execution.run`. `PI_BASH_TOOL` exposes only `{ command, timeout? }` to the model; `parseBashInput` additionally requires harness-supplied `machineId` and absolute `cwd`. `BashResult` carries bounded Pi-style text, `isError`, execution status and full-output file/truncation metadata. Known command failure/timeout is a completed operation with `isError: true`; uncertain execution is an execution-origin failure, never permission to resubmit automatically.
+
+The standalone [Pi-style read worker](../../apps/tool-pi-read-workers/README.md) uses `filesystem.read_file`. `PI_READ_TOOL` exposes `{ path, offset?, limit? }`; `parseReadInput` adds host-supplied machine/cwd. `ReadResult` carries bounded text or a Cloudflare Images URL, file/truncation/image metadata and `isError`. Files above 5 MiB and ordinary filesystem errors are completed tool errors. Production harness adoption is intentionally separate.
 
 The [shared execution callback worker](../../apps/execution-gateway-callback-workers/README.md) accepts signed v3 inline events with response/error, job/machine/key/generation identity and host-owned context. `ExecutionGatewayContext` requires an allowlisted receiver name; other JSON fields remain tool-owned. Bash requires exact session/operation/machine/timeout routing context. `GatewayEventReceiverBinding.acceptGatewayEvent` uses structured RPC and returns `{ receipt: GatewayEventReceipt }` only after durable DO admission. `parseGatewayEventReply` validates the nested receipt and disposes the RPC wrapper. There is no intermediate delivery database, Queue or early acknowledgement; the gateway owns retries. Parsers establish shape, not authentication. Runtime completion contracts are unchanged.
 

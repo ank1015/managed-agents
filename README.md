@@ -22,7 +22,8 @@ pnpm check
 - [Minimal bash harness and rollout](apps/harness-minimal-bash/README.md)
 - [LLM operation worker](apps/llm-gateway-workers/README.md)
 - [Pi-style bash operation worker](apps/tool-pi-bash-workers/README.md)
+- [Pi-style read operation worker (standalone)](apps/tool-pi-read-workers/README.md)
 - [Execution callback router](apps/execution-gateway-callback-workers/README.md)
 - [Logging policy](packages/diagnostics/README.md)
 
-`pnpm dev` starts only the API; run its bound services separately after configuring local secrets and D1. Checks use fake gateways and do not deploy or invoke real providers. Compaction, hard cancellation, additional tools and streaming remain future work.
+`pnpm dev` starts only the API; run its bound services separately after configuring local secrets and D1. Checks use fake gateways and do not deploy or invoke real providers. The read worker is available for future harness adoption; the current harness remains bash-only. Compaction, hard cancellation and streaming remain future work.
