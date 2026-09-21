@@ -1,9 +1,9 @@
+import { parseToolExecutionSubmission } from "./tool-execution.ts";
+import type { ToolExecutionSubmission } from "./tool-execution.ts";
 import { ContractException } from "./errors.ts";
 import { parseJsonValue } from "./json.ts";
-import { parseProviderSubmission } from "./operation.ts";
-import type { ProviderSubmission } from "./operation.ts";
 import { parseUuid } from "./llm.ts";
-import type { LlmTool, SessionDestination } from "./llm.ts";
+import type { LlmTool } from "./llm.ts";
 import { nonemptyString, record } from "./validation.ts";
 
 export const PI_BASH_OPERATION = Object.freeze({ provider: "tool-pi-bash", type: "bash", version: "v1" });
@@ -26,7 +26,7 @@ export const PI_BASH_TOOL = Object.freeze({
 
 export type BashToolInput = { command: string; timeout?: number };
 export type BashInput = BashToolInput & { machineId: string; cwd: string };
-export interface BashSubmission { destination: SessionDestination; submission: ProviderSubmission }
+export type BashSubmission = ToolExecutionSubmission;
 export interface BashWorkerBinding { submit(value: unknown): Promise<unknown> }
 
 export function parseBashToolInput(value: unknown): BashToolInput {
@@ -50,28 +50,19 @@ export function parseBashInput(value: unknown): BashInput {
 }
 /** Node/Pi timers truncate fractional milliseconds and clamp sub-millisecond values to 1 ms. */
 export function bashTimeoutMs(timeout: number): number { return Math.max(1, Math.trunc(timeout * 1000)); }
-export function parseBashSubmission(value: unknown): BashSubmission {
-  const r = record(parseJsonValue(value), ["destination", "submission"], "bash submission");
-  const d = record(r.destination, ["routeKey", "sessionId"], "destination");
-  const destination = { routeKey: nonemptyString(d.routeKey, "routeKey"), sessionId: nonemptyString(d.sessionId, "sessionId") };
-  const submission = parseProviderSubmission(r.submission);
-  for (const id of [destination.routeKey, destination.sessionId, submission.operationId, submission.submissionId]) {
-    if (id.length > 2048) throw new ContractException("INVALID_REQUEST", "Operation routing identifier is too long.");
-  }
-  return { destination, submission };
-}
+export const parseBashSubmission = parseToolExecutionSubmission;
 
 export type BashResult = {
   content: { type: "text"; text: string }[];
   /** A known command failure is a completed tool invocation, not a reason to execute it again. */
   isError: boolean;
   details: {
-    gatewayJobId: string; machineId: string; runId: string;
-    executionHandle: { id: string; generation_id: string };
+    requestId: string; machineId: string; runtimeGeneration: string;
+    wallTimeSeconds: number; originalBytes: number;
     reason: "exited" | "timed_out" | "terminated" | "start_failed" | "lost";
     exitCode: number | null; signal: string | null; timedOut: boolean;
     fullOutputPath: string;
-    outputFile: { artifactId: string; sizeBytes: number; sha256: string; complete: boolean; expiresAt: string };
+    outputFile: { artifactId: string; sizeBytes: number; complete: boolean; expiresAt: string | null };
     truncation: {
       truncated: boolean; truncatedBy: "lines" | "bytes" | "upstream" | null;
       outputLines: number; outputBytes: number; maxLines: number; maxBytes: number;
