@@ -29,7 +29,11 @@ async fn get(peer: &mut Peer) -> Value {
 async fn accept(listener: &TcpListener, machine: Uuid, generation: Uuid) -> Peer {
     let (socket, _) = listener.accept().await.unwrap();
     let mut peer = accept_async(socket).await.unwrap();
-    put(&mut peer, json!({"type":"welcome","protocolVersion":1,"machineId":machine,"credentialExpiresAt":store::now()+3_600_000})).await;
+    put(
+        &mut peer,
+        json!({"type":"welcome","protocolVersion":1,"machineId":machine}),
+    )
+    .await;
     let hello = get(&mut peer).await;
     assert_eq!(hello["type"], "hello");
     assert_eq!(hello["runtimeGeneration"], generation.to_string());
@@ -52,7 +56,7 @@ fn request(generation: Uuid, operation: &str, params: Value) -> Incoming {
         request_hash: protocol::hash(&json!({"id":id,"operation":operation})).unwrap(),
         runtime_generation: generation,
         operation,
-        return_ticket: id,
+        routing_envelope: id,
     }
 }
 
@@ -66,7 +70,7 @@ async fn exchange(peer: &mut Peer, req: &Incoming) -> Value {
                 assert_eq!(frame["dispatchId"], req.dispatch_id.to_string());
                 accepted = true;
             }
-            Some("result") if frame["returnTicket"] == req.return_ticket => {
+            Some("result") if frame["routingEnvelope"] == req.routing_envelope => {
                 assert!(accepted);
                 let outcome = &frame["outcome"];
                 put(peer, json!({"type":"result_ack","deliveryId":frame["deliveryId"],
@@ -103,7 +107,7 @@ async fn reconnect_replays_delivered_results_and_preserves_uuid_process_control(
         let machine = Uuid::new_v4();
         let mut credential = Credential {
             gateway_url: format!("http://{}", listener.local_addr().unwrap()),
-            user_id: "test".into(), machine_id: machine, token: "local-test-token".into(),
+            machine_id: machine, token: "local-test-token".into(),
         };
         let params = json!({"cwd":directory.path(),"command":{"type":"shell","script":"printf x >> marker; sleep 30"},"completion":{"mode":"yield","wait_ms":250}});
         let mut start = request(generation, "execution.exec", params);
