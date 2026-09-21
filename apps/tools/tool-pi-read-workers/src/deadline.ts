@@ -1,5 +1,6 @@
-/** One budget for the complete POST/replay or callback path, below the gateway's 10s callback timeout. */
-export const REQUEST_BUDGET_MS = 8_000;
+/** Submission budget is below the Session driver timeout; callbacks stay below the gateway admission timeout. */
+export const REQUEST_BUDGET_MS = 7_000;
+export const CALLBACK_BUDGET_MS = 25_000;
 
 export async function withDeadline<T>(work: (signal: AbortSignal) => Promise<T>, ms = REQUEST_BUDGET_MS): Promise<T> {
   const controller = new AbortController();

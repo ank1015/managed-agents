@@ -8,7 +8,6 @@ export interface SessionNamespace {
 }
 export interface Env extends LogSettings {
   EXECUTION_GATEWAY_URL: string;
-  EXECUTION_GATEWAY_API_KEY: string;
   CLOUDFLARE_IMAGES_ACCOUNT_ID?: string;
   CLOUDFLARE_IMAGES_API_TOKEN?: string;
   CLOUDFLARE_IMAGES_VARIANT?: string;
