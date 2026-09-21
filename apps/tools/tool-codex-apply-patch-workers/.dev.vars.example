@@ -1,0 +1,2 @@
+# The harness supplies the per-machine execution secret on every private submit RPC.
+# No gateway API key or webhook secret is configured on this Worker.
