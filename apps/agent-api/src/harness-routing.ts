@@ -5,6 +5,7 @@ import type { Env, SessionNamespace } from "./types.ts";
 
 // Deployment metadata only. Route keys and existing namespace bindings must remain stable.
 const routes = [
+  { key: "pi-no-compaction-v1", harness: { id: "pi-no-compaction", version: "v1" }, binding: "PI_NO_COMPACTION_SESSIONS" },
   { key: "minimal-bash-v7", harness: { id: "minimal-bash", version: "v7" }, binding: "MINIMAL_BASH_SESSIONS" },
 ] as const;
 export function creationRoute(harness: HarnessIdentity) {

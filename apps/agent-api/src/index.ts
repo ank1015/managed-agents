@@ -33,7 +33,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     const page = parseMessagePageQuery({ ...(url.searchParams.has("after") ? { after: Number(url.searchParams.get("after")) } : {}),
       ...(url.searchParams.has("limit") ? { limit: Number(url.searchParams.get("limit")) } : {}) });
     const entry = await new SessionDirectory(env.SESSION_DIRECTORY).readyEntry(sessionId);
-    if (entry.route_key !== "minimal-bash-v7") throw notFound();
+    if (entry.route_key !== "minimal-bash-v7" && entry.route_key !== "pi-no-compaction-v1") throw notFound();
     const result = await callSession<{ messages: unknown[]; nextCursor: number | null; state: Record<string, unknown> }>(env, entry.route_key, sessionId,
       { action: match[2] === "messages" ? "getMessages" : "getPendingMessages", value: page });
     // Display status belongs to D1; the DO returns only its execution state.

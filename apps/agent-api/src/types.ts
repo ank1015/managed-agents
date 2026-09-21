@@ -8,6 +8,7 @@ export interface SessionNamespace {
 }
 export interface Env extends LogSettings {
   SESSION_DIRECTORY: D1Database;
+  PI_NO_COMPACTION_SESSIONS?: SessionNamespace;
   MINIMAL_BASH_SESSIONS?: SessionNamespace;
   BACKEND_TOKEN: string;
 }
