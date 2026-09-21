@@ -13,7 +13,7 @@
     "logs": { "invocation_logs": false }
   },
   "vars": {
-    "EXECUTION_GATEWAY_URL": "https://execution.acentric.dev",
+    "EXECUTION_GATEWAY_URL": "https://execution-api.acentric.dev",
     // Harness routes and namespace bindings must be updated together.
     "SESSION_ROUTES": "{\"pi-no-compaction-v1\":\"PI_NO_COMPACTION_SESSIONS\"}"
   },
