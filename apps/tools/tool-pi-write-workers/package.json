@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@managed-agents/diagnostics": "workspace:*",
-    "@managed-agents/contracts": "workspace:*"
+    "@managed-agents/contracts": "workspace:*",
+    "@managed-agents/execution-gateway-protocol": "workspace:*"
   },
   "devDependencies": {
     "@managed-agents/harness-api": "workspace:*",
