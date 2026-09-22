@@ -5,7 +5,8 @@ execution daemon and core.
 
 Two harnesses are implemented: **minimal-bash/v7** (OpenAI and serial bash) and
 **pi-no-compaction/v1** (OpenAI or Fireworks, with read, bash, edit and write).
-Both store immutable session configuration, including a machine execution secret.
+Both store immutable session configuration, including the app-selected execution
+gateway URL and machine execution secret.
 Codex-style apply_patch is available as a separate tool Worker, not yet exposed by
 either harness.
 
@@ -32,6 +33,18 @@ Checks include local Worker/SQLite integration tests, isolated native daemons an
 dry-run Worker builds. They do not deploy or invoke live model providers.
 `pnpm dev` starts only agent-api; its bound services and local resources must be
 configured separately.
+
+## Contract policy
+
+Only current API, RPC, native-operation and storage contracts are supported.
+Breaking changes are intentional: remove legacy aliases, old-envelope adapters
+and in-place schema upgrade paths. Do not replace them with old-version detection
+or special rejection branches. Deploy matching callers and receivers; use fresh
+sessions/state when the storage contract changes.
+
+Documented optional defaults, idempotent retries, outbox recovery, OS support and
+explicit administration workflows are current functionality, not old-contract
+compatibility. The Node REPL and release CI target Node.js 26.
 
 ## Documentation
 
