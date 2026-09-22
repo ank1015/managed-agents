@@ -4,15 +4,13 @@ import { GatewayError, MAX_HTTP_BYTES, submission, hashJson, jsonValue, object }
 import { PI_READ_RECEIVER } from "@managed-agents/contracts";
 import type { ReadContext } from "./context.ts";
 import { readLimited } from "./http.ts";
-import type { Env } from "./types.ts";
+import { parseExecutionGatewayUrl } from "@managed-agents/contracts";
 
 export { GatewayError };
 export class Gateway {
   readonly base: string;
-  constructor(readonly env: Env, readonly signal: AbortSignal) {
-    const url = new URL(env.EXECUTION_GATEWAY_URL);
-    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") throw Error("EXECUTION_GATEWAY_URL must be an HTTPS origin.");
-    this.base = url.origin;
+  constructor(gatewayUrl: string, readonly signal: AbortSignal) {
+    this.base = parseExecutionGatewayUrl(gatewayUrl);
   }
   async submit(input: ReadInput, parsed: ReadSubmission, requestId: string, context: ReadContext): Promise<void> {
     const body = submission({ requestId, runtimeGeneration: parsed.execution.runtimeGeneration, operation: { operation: "filesystem.read", params: { path: input.path, cwd: input.cwd, mode: "bytes" } }, callback: { receiver: PI_READ_RECEIVER, context: jsonValue(context) } });

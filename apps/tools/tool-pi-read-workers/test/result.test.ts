@@ -7,7 +7,7 @@ import type { ReadFile } from "../src/result.ts";
 import { detectImageMimeType, bmpToPng } from "../src/images.ts";
 import type { ReadContext } from "../src/context.ts";
 
-const context: ReadContext = { routeKey: "test-v1", sessionId: "session", runtimeGeneration: "00000000-0000-4000-8000-000000000002", cwd: "/workspace", operationId: "o", submissionId: "o",
+const context: ReadContext = { gatewayUrl: "https://gateway.test", routeKey: "test-v1", sessionId: "session", runtimeGeneration: "00000000-0000-4000-8000-000000000002", cwd: "/workspace", operationId: "o", submissionId: "o",
   machineId: "00000000-0000-4000-8000-000000000001", path: "file.txt", offset: null, limit: null };
 function file(text: string): ReadFile {
   return { bytes: Buffer.from(text), path: "/workspace/file.txt", sha256: createHash("sha256").update(text).digest("hex"), modifiedAt: null, isSymlink: false };

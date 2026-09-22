@@ -7,7 +7,6 @@ export interface SessionNamespace {
   get(id: DurableObjectId): { sessionRequest(command: unknown): Promise<SessionReply<unknown>> };
 }
 export interface Env extends LogSettings {
-  EXECUTION_GATEWAY_URL: string;
   CLOUDFLARE_IMAGES_ACCOUNT_ID?: string;
   CLOUDFLARE_IMAGES_API_TOKEN?: string;
   CLOUDFLARE_IMAGES_VARIANT?: string;

@@ -54,6 +54,10 @@ export class TestSession extends DurableObject<TestEnv> {
     if (fail) { await this.ctx.storage.put("fail", fail - 1); throw new Error("Injected delivery failure."); }
     const command = parseSessionCommand(value);
     if (command.action !== "acceptToolCompletion") throw new Error("Unexpected action.");
+    const expected = await this.ctx.storage.get<{ gatewayUrl: string; runtimeGeneration: string }>("execution") ?? await execution(this.driver.getSession().identity.sessionId);
+    const pin = (command.value as { execution: { gatewayUrl: string; machineId: string; runtimeGeneration: string } }).execution;
+    const input = parseReadInput(this.driver.getSession().config);
+    if (pin.gatewayUrl !== expected.gatewayUrl || pin.machineId !== input.machineId || pin.runtimeGeneration !== expected.runtimeGeneration) throw Error("Completion does not match the session execution pin.");
     const receipt = await this.driver.acceptCompletion((command.value as { completion: unknown }).completion);
     const lose = await this.ctx.storage.get<number>("lose") ?? 0;
     if (lose) { await this.ctx.storage.put("lose", lose - 1); throw new Error("Injected lost durable receipt."); }
@@ -89,5 +93,5 @@ export default {
 
 async function execution(sessionId: string) {
   const stored = { runtimeGeneration:"00000000-0000-4000-8000-000000000002" };
-  return {...stored, token: await issueMachineSecret("read-test-signing-secret-at-least-32-bytes", "00000000-0000-4000-8000-000000000001", "execution", 1)};
+  return {...stored, gatewayUrl: "https://gateway.test", token: await issueMachineSecret("read-test-signing-secret-at-least-32-bytes", "00000000-0000-4000-8000-000000000001", "execution", 1)};
 }
