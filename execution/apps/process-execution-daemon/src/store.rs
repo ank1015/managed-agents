@@ -38,13 +38,17 @@ impl Credential {
         )?)
     }
     pub fn save(&self, path: &Path) -> Result<()> {
+        self.ensure_same_identity(path)?;
+        write_json(&path.join("credential.json"), self)
+    }
+    pub fn ensure_same_identity(&self, path: &Path) -> Result<()> {
         if path.join("credential.json").exists() {
             let old = Self::load(path)?;
             if (old.machine_id, &old.gateway_url) != (self.machine_id, &self.gateway_url) {
                 return Err("this state directory belongs to another machine or gateway; use a separate --state-dir".into());
             }
         }
-        write_json(&path.join("credential.json"), self)
+        Ok(())
     }
 }
 pub struct Lock {

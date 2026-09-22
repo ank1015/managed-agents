@@ -3,6 +3,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{io::Write, path::Path, time::Duration};
 use url::Url;
+pub const DEFAULT_MANIFEST_URL: &str =
+    "https://downloads.acentric.dev/managed-agents/process-execution-daemon/latest/manifest.json";
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Manifest {

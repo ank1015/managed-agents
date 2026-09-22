@@ -1,4 +1,5 @@
 mod config;
+mod enrollment;
 mod http;
 mod protocol;
 mod retry;
@@ -33,13 +34,17 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
-    /// Register this machine. Read the management secret from stdin; never save it.
+    /// Approve registration in your app, or register directly with a management secret.
     Register {
+        /// App enrollment endpoint. Omit to reuse the saved app URL.
+        #[arg(long, conflicts_with_all = ["gateway_url", "machine_id"])]
+        url: Option<String>,
+        /// Direct registration with a management secret read from stdin.
+        #[arg(long, requires = "name")]
+        gateway_url: Option<String>,
         #[arg(long)]
-        gateway_url: String,
-        #[arg(long)]
-        name: String,
-        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, requires = "gateway_url")]
         machine_id: Option<Uuid>,
         #[arg(long)]
         allow_insecure_loopback: bool,
@@ -151,17 +156,61 @@ async fn run(cli: Cli) -> Result<()> {
     };
     match cli.command {
         Command::Register {
+            url,
             gateway_url,
             name,
             machine_id,
             allow_insecure_loopback,
         } => {
+            if gateway_url.is_none() {
+                let was_running = store::running(&directory)?;
+                if was_running {
+                    println!(
+                        "A successful re-registration will restart the daemon and its native sessions."
+                    );
+                }
+                let approved = tokio::select! {
+                    result = enrollment::authorize(&directory, url.as_deref(), name.as_deref(), allow_insecure_loopback) => result?,
+                    _ = tokio::signal::ctrl_c() => return Err("Registration interrupted. Run `register` again to resume; existing credentials were not changed.".into()),
+                };
+                // Wait for approval without disrupting a connected runtime. Never
+                // change this state directory's identity or discard its outbox.
+                approved.credential.ensure_same_identity(&directory)?;
+                // Rotation may have closed the old socket and stopped the daemon
+                // before the app delivered the new credential.
+                let restart = was_running || store::running(&directory)?;
+                let service = service::Service::new(directory.clone(), None)?;
+                if restart {
+                    stop(&directory).await?;
+                    service.disconnect()?;
+                }
+                {
+                    let _lock = store::Lock::acquire(&directory)?;
+                    save_local_mode(&directory, approved.insecure)?;
+                    approved.credential.save(&directory)?;
+                    approved.finish(&directory)?;
+                }
+                println!(
+                    "Registered.\nMachine: {}\nDaemon secret saved in the private state directory.",
+                    approved.credential.machine_id
+                );
+                if restart {
+                    service.connect()?;
+                    wait_connected(&directory).await?;
+                } else {
+                    println!("Run `connect` to start the daemon.");
+                }
+                return Ok(());
+            }
             let _lock = store::Lock::acquire(&directory)?;
             let token = token()?;
+            let name = name
+                .as_deref()
+                .ok_or("direct registration requires --name")?;
             let credential = http::register(
                 &directory,
-                &gateway_url,
-                &name,
+                gateway_url.as_deref().unwrap(),
+                name,
                 machine_id,
                 &token,
                 allow_insecure_loopback,
@@ -257,7 +306,8 @@ async fn run(cli: Cli) -> Result<()> {
             let mut config = config::Config::load(&directory, None)?;
             let selected = manifest_url
                 .as_deref()
-                .or(config.update_manifest_url.as_deref());
+                .or(config.update_manifest_url.as_deref())
+                .or(Some(update::DEFAULT_MANIFEST_URL));
             update::apply(&directory, selected, from.as_deref(), sha256.as_deref()).await?;
             if let Some(url) = manifest_url {
                 config.update_manifest_url = Some(url);
