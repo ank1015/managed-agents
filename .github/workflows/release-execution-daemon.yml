@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 24
+          node-version: 26
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
@@ -64,6 +64,7 @@ jobs:
         # This single reconnect fixture executes printf/sleep; Unix jobs run it.
         run: cargo test --manifest-path execution/Cargo.toml --locked -p process-execution-daemon -- --skip reconnect_replays_delivered_results_and_preserves_uuid_process_control
       - run: node --test execution/apps/process-execution-daemon/release/manifest.test.mjs
+      - run: python -m unittest discover -s execution/apps/process-execution-daemon/release -p '*_test.py'
 
   build:
     needs: check
@@ -157,6 +158,7 @@ jobs:
             "$DOWNLOAD_BASE_URL/$release_key/" "$version+git.$GITHUB_SHA.$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT"
           cp execution/packages/process-execution-core/src/native/filesystem/CODEX-LICENSE dist/CODEX-LICENSE
           cp execution/apps/process-execution-daemon/release/NOTICE dist/NOTICE
+          cp execution/apps/process-execution-daemon/release/install.py dist/install.py
       - name: Publish and verify immutable release, then promote manifest
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -182,6 +184,9 @@ jobs:
           curl --fail --silent --show-error --retry 10 --retry-delay 2 --retry-all-errors \
             "$DOWNLOAD_BASE_URL/$RELEASE_KEY/manifest.json" --output "$verify_dir/manifest.json"
           cmp dist/manifest.json "$verify_dir/manifest.json"
+          curl --fail --silent --show-error --retry 10 --retry-delay 2 --retry-all-errors \
+            "$DOWNLOAD_BASE_URL/$RELEASE_KEY/install.py" --output "$verify_dir/install.py"
+          cmp dist/install.py "$verify_dir/install.py"
           # A slower or manually rerun older commit must not replace the latest feed.
           if [ "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" != "$GITHUB_SHA" ]; then
             echo 'Published immutable release; main moved, so latest was not changed.' >> "$GITHUB_STEP_SUMMARY"
@@ -193,5 +198,11 @@ jobs:
           curl --fail --silent --show-error --retry 10 --retry-delay 2 --retry-all-errors \
             "$DOWNLOAD_BASE_URL/$RELEASE_PREFIX/latest/manifest.json" --output "$verify_dir/latest.json"
           cmp dist/manifest.json "$verify_dir/latest.json"
+          aws s3 cp dist/install.py "s3://$R2_BUCKET/$RELEASE_PREFIX/latest/install.py" \
+            --endpoint-url "$R2_ENDPOINT" --content-type text/x-python \
+            --cache-control 'no-store' --no-progress
+          curl --fail --silent --show-error --retry 10 --retry-delay 2 --retry-all-errors \
+            "$DOWNLOAD_BASE_URL/$RELEASE_PREFIX/latest/install.py" --output "$verify_dir/latest-install.py"
+          cmp dist/install.py "$verify_dir/latest-install.py"
           echo "Published [$GITHUB_SHA]($DOWNLOAD_BASE_URL/$RELEASE_KEY/manifest.json)." >> "$GITHUB_STEP_SUMMARY"
           echo "Update feed: $DOWNLOAD_BASE_URL/$RELEASE_PREFIX/latest/manifest.json" >> "$GITHUB_STEP_SUMMARY"
