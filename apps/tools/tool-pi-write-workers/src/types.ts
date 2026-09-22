@@ -7,7 +7,6 @@ export interface SessionNamespace {
   get(id: DurableObjectId): { sessionRequest(command: unknown): Promise<SessionReply<unknown>> };
 }
 export interface Env extends LogSettings {
-  EXECUTION_GATEWAY_URL: string;
   SESSION_ROUTES: string;
   [binding: string]: unknown;
 }

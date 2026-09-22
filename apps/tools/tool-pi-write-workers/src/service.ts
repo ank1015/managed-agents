@@ -33,9 +33,9 @@ export class WriteService {
       const { operationId, submissionId } = parsed.submission;
       const requestId = await writeIdentity(submissionId), contentBytes = Buffer.byteLength(input.content, "utf8");
       if (contentBytes > PI_WRITE_MAX_FILE_BYTES) return { status: "completed", jobId: `local:${requestId}`, outcome: completed(fileTooLarge(input)) };
-      const context = { ...parsed.destination, machineId: input.machineId, runtimeGeneration: parsed.execution.runtimeGeneration,
+      const context = { ...parsed.destination, gatewayUrl: parsed.execution.gatewayUrl, machineId: input.machineId, runtimeGeneration: parsed.execution.runtimeGeneration,
         operationId, submissionId, cwd: input.cwd, path: input.path, contentBytes, contentSha256: await sha256(input.content) };
-      try { await new Gateway(this.env, signal).submit(input, parsed, requestId, context); }
+      try { await new Gateway(parsed.execution.gatewayUrl, signal).submit(input, parsed, requestId, context); }
       catch (error) {
         if (error instanceof GatewayError && !error.retryable && !error.uncertain && ![401, 403, 409].includes(error.status)) {
           return { status: "rejected", error: { code: error.code, message: error.message } };
@@ -47,7 +47,7 @@ export class WriteService {
       return { status: "accepted", jobId: requestId };
     });
   }
-  /** Trusted Machine gateway private RPC; no legacy HMAC webhook envelope. */
+  /** Trusted Machine gateway private RPC. */
   acceptExecutionResult(value: unknown): Promise<CompletionReply> {
     return withDeadline(async signal => {
       const { event, context } = await parseWriteCompletion(value);
@@ -55,7 +55,7 @@ export class WriteService {
       const outcome = await terminalOutcome(event, context);
       signal.throwIfAborted();
       const reply = await namespace.get(namespace.idFromName(context.sessionId)).sessionRequest({
-        action: "acceptToolCompletion", value: { execution: { machineId: context.machineId,
+        action: "acceptToolCompletion", value: { execution: { gatewayUrl: context.gatewayUrl, machineId: context.machineId,
           runtimeGeneration: context.runtimeGeneration }, completion: { provider: PI_WRITE_OPERATION.provider, operationId: context.operationId,
           submissionId: context.submissionId, jobId: event.requestId, outcome } },
       });

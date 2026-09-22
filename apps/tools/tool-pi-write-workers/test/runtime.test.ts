@@ -20,7 +20,7 @@ test("real new gateway, Machine DO, daemon/core, write worker and durable Sessio
   const backend="write-test-backend-secret-at-least-32-bytes",common={modules:true,compatibilityDate:"2026-07-30",compatibilityFlags:["nodejs_compat"]};
   const app=new Miniflare({log:new Log(LogLevel.ERROR),workers:[
     {...common,name:"gateway",script:gateway,bindings:{MANAGEMENT_SECRET:backend,CREDENTIAL_SIGNING_SECRET:auth,ROUTING_SIGNING_SECRET:auth+"routing",CALLBACK_TIMEOUT_MS:"30000",CALLBACK_ROUTES:JSON.stringify({"tool-pi-write-v1":"WRITE_EVENTS"})},durableObjects:{MACHINES:{className:"Machine",useSQLite:true}},serviceBindings:{WRITE_EVENTS:{name:"write",entrypoint:"PiWriteCallbacks"}}},
-    {...common,name:"write",script:write,bindings:{EXECUTION_GATEWAY_URL:"https://gateway.test",SESSION_ROUTES:JSON.stringify({"test-v1":"SESSIONS"})},durableObjects:{SESSIONS:{className:"TestSession",scriptName:"host"}},outboundService:{name:"gateway"}},
+    {...common,name:"write",script:write,bindings:{SESSION_ROUTES:JSON.stringify({"test-v1":"SESSIONS"})},durableObjects:{SESSIONS:{className:"TestSession",scriptName:"host"}},outboundService:{name:"gateway"}},
     {...common,name:"host",script:host,serviceBindings:{WRITE:{name:"write",entrypoint:"PiWrite"},WRITE_EVENTS:{name:"write",entrypoint:"PiWriteCallbacks"}},durableObjects:{SESSIONS:{className:"TestSession",useSQLite:true}}},
   ]});
   const binary=join(root,"execution/target/debug/process-execution-daemon");
@@ -38,7 +38,7 @@ test("real new gateway, Machine DO, daemon/core, write worker and durable Sessio
   const runtimeGeneration=row.runtimeGeneration;
   async function call(path:string,body:unknown){const r=await hostApi.fetch("https://host"+path,{method:"POST",body:JSON.stringify(body)});assert.ok(r.ok,await r.clone().text());return r.json() as Promise<any>;}
   async function writeFileViaTool(path:string,content:string){
-    const sessionId=randomUUID(),execution={token:executionSecret,runtimeGeneration };
+    const sessionId=randomUUID(),execution = { gatewayUrl: "https://gateway.test", token:executionSecret,runtimeGeneration };
     await call("/start",{sessionId,execution,input:{...input,machineId,cwd:dir,path,content}});
     const snapshot=await until(async()=>{const s=await call("/snapshot",{sessionId}) as Snapshot;return s.results.length?s:undefined;});
     const result=snapshot.operations[0]!.outcome;assert.equal(result?.status,"succeeded",logs+JSON.stringify(result));
@@ -54,7 +54,7 @@ test("real new gateway, Machine DO, daemon/core, write worker and durable Sessio
   executionSecret = rotated.secret;
   await assert.rejects(call("/submit", {
     destination: { routeKey: "test-v1", sessionId: randomUUID() },
-    execution: { token: oldSecret, runtimeGeneration },
+    execution: { gatewayUrl: "https://gateway.test", token: oldSecret, runtimeGeneration },
     submission: { operationId: "revoked-attempt", submissionId: "revoked-attempt",
       request: { provider: "tool-pi-write", type: "write", version: "v1", input: { ...input, machineId, cwd: dir, path: "file.txt" } } },
   }), /INVALID_SECRET/);

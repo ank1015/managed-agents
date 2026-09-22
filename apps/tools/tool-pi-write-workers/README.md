@@ -121,7 +121,7 @@ cancellation does not undo an accepted write. Public HTTP exposes only `/health`
 
 ## Configuration and rollout
 
-- `EXECUTION_GATEWAY_URL=https://execution-api.acentric.dev`.
+- Gateway URL comes from the session's immutable `config.executionGatewayUrl` via `execution.gatewayUrl`; no deployment-wide URL setting.
 - Session namespace bindings and `SESSION_ROUTES` allowlist route completions.
 - Machine config binds `WRITE_EVENTS` to
   `managed-agents-tool-pi-write/PiWriteCallbacks` and routes `tool-pi-write-v1` there.
@@ -129,7 +129,7 @@ cancellation does not undo an accepted write. Public HTTP exposes only `/health`
 
 Coordinate the caller execution-context migration and drain old writes before a
 production cutover. Deploy the write worker before the Machine binding, then
-use its matching private callback binding. This contract is deployed; see the [deployment record](../../../execution/DEPLOYMENT.md).
+use its matching private callback binding. See the [earlier deployment record](../../../execution/DEPLOYMENT.md). Deploy matching hosts and tools for the per-session gateway URL contract.
 
 ## Verification
 
@@ -149,13 +149,13 @@ symlinks, filesystem errors and replay of an earlier write after a later mutatio
 It uses isolated temporary files and does not replace or stop the installed daemon.
 
 
-The harness supplies `execution: { token, runtimeGeneration }` on every submit.
+The harness supplies `execution: { gatewayUrl, token, runtimeGeneration }` on every submit.
 The token must be this machine's `me1.…` execution secret. This worker neither
 stores nor discovers, rotates or refreshes it. Different submissions can target
-different machines with different tokens; the harness owns that choice.
+different gateways and machines with different tokens; the harness owns that choice.
 Credential storage and replacement are outside this tool's contract.
 
-Only the current [execution gateway](../../../execution/apps/execution-gateway/README.md)
+Any gateway implementing the [tool-facing gateway contract](../GATEWAY-CONTRACT.md)
 is supported. User credentials, temporary grants, daemon secrets, legacy jobs
 responses and public webhook envelopes are rejected; there is no compatibility
 fallback. Malformed replies after dispatch are uncertain and must be retried with
