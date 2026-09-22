@@ -61,7 +61,9 @@ managed-agents/process-execution-daemon/
     checksums.sha256
     CODEX-LICENSE
     NOTICE
+    install.py
   latest/manifest.json
+  latest/install.py
 ```
 
 The new updater requires raw executables, not the old compressed archives. One
@@ -151,6 +153,21 @@ re-enrolling a daemon is a separate machine-side step. A successful `/health`
 response establishes liveness, not complete execution/callback readiness.
 
 ## Installation and updates
+
+The release workflow publishes a standard-library Python 3 installer alongside
+the binaries and promotes it to `latest/install.py` after verification. On
+macOS/Linux, the one-command install (once this installer release is published) is:
+
+```sh
+curl -fsSL https://downloads.acentric.dev/managed-agents/process-execution-daemon/latest/install.py | python3
+```
+
+It installs to `~/.local/bin` without sudo and verifies the binary size, checksum
+and executable identity. Repeating it delegates to the installed daemon's updater.
+The daemon's `update` now uses this official manifest feed by default; an explicit
+or previously saved manifest URL still takes precedence. App-owned registration
+uses `register --url APP_ENROLLMENT_URL`; see the
+[backend enrollment contract](apps/process-execution-daemon/ENROLLMENT.md).
 
 Use the immutable artifact URL and corresponding SHA-256 from the new manifest to
 download and verify the initial binary; place it in the intended executable path

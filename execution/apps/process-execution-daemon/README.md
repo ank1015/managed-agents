@@ -9,7 +9,43 @@ The new binary is **`process-execution-daemon`**. Its configuration, service nam
 and gateway protocol are separate from the legacy `process-execution-host-daemon`.
 Nothing here migrates or replaces the installed legacy daemon automatically.
 
-## Build and register
+## Install and register through your app
+
+Once a release containing the installer has been published, macOS/Linux users
+with Python 3 and curl can install with one command (no sudo):
+
+```sh
+curl -fsSL https://downloads.acentric.dev/managed-agents/process-execution-daemon/latest/install.py | python3
+```
+
+This verifies the platform, binary size, SHA-256 and executable identity, installs
+to `~/.local/bin`, and retains the license notices. Add that directory to PATH if
+needed. Re-running the installer uses the daemon's safe updater. Windows users can
+download the same `install.py` and run `py install.py`; it installs to
+`%LOCALAPPDATA%\managed-agents\bin` (add this to PATH).
+
+```sh
+process-execution-daemon register --url https://YOUR-APP/api/machines/enroll
+process-execution-daemon connect
+process-execution-daemon update
+
+# Later: repeat browser approval using the saved app URL.
+process-execution-daemon register
+```
+
+Registration prints a browser URL and confirmation code, then waits for approval.
+Your app owns accounts and keeps the gateway management/execution secrets. Only
+the approved daemon credential is saved in the private `credential.json` location.
+No management token is needed on stdin in app mode. First registration does not
+connect automatically; re-enrollment of an active daemon restarts it with the new
+secret. Existing journal/outbox data is preserved.
+
+Your backend must implement the [app enrollment protocol](ENROLLMENT.md), including
+login/approval, private polling, ownership validation and retry-safe gateway
+registration/rotation. Any HTTPS endpoint implementing that contract is supported;
+it is not an OAuth token endpoint or the execution gateway registration URL.
+
+## Build and direct-register (management escape hatch)
 
 From the repository root:
 
@@ -60,7 +96,9 @@ as command-line arguments or printed by status.
 
 | Command | Behavior |
 | --- | --- |
-| `register` | Register/idempotently recover enrollment and save both machine secrets |
+| `register --url APP_URL` | Print browser approval link, wait, save daemon secret and app URL |
+| `register` | Resume/repeat browser approval using the saved app URL |
+| `register --gateway-url URL --name NAME` | Direct management-token registration; save both machine secrets |
 | `configure` | Save an existing daemon secret for this installation |
 | `connect [--config PATH]` | Install/start a user login service; optionally save the supplied config |
 | `run [--config PATH]` | Run in foreground; Ctrl-C/SIGTERM shuts down native sessions |
@@ -70,7 +108,7 @@ as command-line arguments or printed by status.
 | `outbox` | Show quarantined request/delivery IDs and reasons; no result/file contents |
 | `outbox --retry DELIVERY_ID` | Requeue a retained failed delivery, without rerunning its operation |
 | `outbox --discard DELIVERY_ID` | Permanently clear a quarantined result payload, keeping its identity tombstone |
-| `update` | Use the saved release-manifest URL |
+| `update` | Use the saved release-manifest URL, or the official hosted feed by default |
 | `update --manifest-url HTTPS_URL` | Verify/install a release and save its manifest URL for future updates |
 | `update --from PATH --sha256 HEX` | Verify/install a local build |
 | `version` / `--version` | Human-readable version information |
@@ -177,6 +215,10 @@ if result persistence fails, the daemon stops and keeps the request uncertain.
 
 ## Native operation mappings
 
+The journal creates the current schema directly, with no old-schema detection
+or column migrations. Before a breaking storage upgrade, drain/reconcile the
+existing outbox with its matching daemon and use a fresh `--state-dir`.
+
 Native `execution.*`, `filesystem.*` and `repl.*` operations pass directly to
 `ProcessExecutionCore::execute`, preserving its schemas/results. This covers Pi
 bash/read/write/edit, Codex exec/stdin/apply_patch/view_image and persistent REPLs.
@@ -250,7 +292,7 @@ for that foreground invocation. Configuration defaults:
 | `cwd` | Native backend base directory, default user home; requests still supply their own absolute cwd |
 | `python`, `node` | `python3`, `node` |
 | `allow_insecure_loopback` | false |
-| `update_manifest_url` | null; set explicitly after publishing the new release feed |
+| `update_manifest_url` | null; `update` defaults to the official hosted release feed |
 | `max_processes`, `max_repls` | 64, 8 globally |
 | `max_active_requests` | 16 |
 | `max_journal_requests` | 100000 |
