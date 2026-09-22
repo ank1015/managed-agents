@@ -33,9 +33,9 @@ export class BashService {
       assertSecretMatches(parsed, input);
       const { operationId, submissionId } = parsed.submission;
       const requestId = await bashIdentity(submissionId);
-      const context = { ...parsed.destination, machineId: input.machineId, runtimeGeneration: parsed.execution.runtimeGeneration,
+      const context = { ...parsed.destination, gatewayUrl: parsed.execution.gatewayUrl, machineId: input.machineId, runtimeGeneration: parsed.execution.runtimeGeneration,
         operationId, submissionId, cwd: input.cwd, commandSha256: await sha256(input.command), timeoutSeconds: input.timeout ?? null };
-      try { await new Gateway(this.env, signal).submit(input, parsed, requestId, context); }
+      try { await new Gateway(parsed.execution.gatewayUrl, signal).submit(input, parsed, requestId, context); }
       catch (error) {
         if (error instanceof GatewayError && !error.retryable && !error.uncertain && ![401, 403, 409].includes(error.status)) {
           return { status: "rejected", error: { code: error.code, message: error.message } };
@@ -53,7 +53,7 @@ export class BashService {
       throw error;
     });
   }
-  /** Trusted Machine gateway private RPC; no legacy HMAC webhook envelope. */
+  /** Trusted Machine gateway private RPC. */
   acceptExecutionResult(value: unknown): Promise<CompletionReply> {
     return withDeadline(async signal => {
       const { event, context } = await parseBashCompletion(value);
@@ -61,7 +61,7 @@ export class BashService {
       const outcome = await terminalOutcome(event, context);
       signal.throwIfAborted();
       const reply = await namespace.get(namespace.idFromName(context.sessionId)).sessionRequest({
-        action: "acceptToolCompletion", value: { execution: { machineId: context.machineId,
+        action: "acceptToolCompletion", value: { execution: { gatewayUrl: context.gatewayUrl, machineId: context.machineId,
           runtimeGeneration: context.runtimeGeneration }, completion: { provider: PI_BASH_OPERATION.provider, operationId: context.operationId,
           submissionId: context.submissionId, jobId: event.requestId, outcome } },
       });

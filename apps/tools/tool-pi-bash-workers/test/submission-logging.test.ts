@@ -12,8 +12,7 @@ test("submission rejection and uncertain acceptance have safe diagnostics, not r
   const records: Record<string, unknown>[] = [];
   t.mock.method(console, "error", (record: Record<string, unknown>) => records.push(record));
   t.mock.method(console, "info", (record: Record<string, unknown>) => records.push(record));
-  const service = new BashService({ EXECUTION_GATEWAY_URL: "https://gateway.test",
-    LOG_SUCCESS_SAMPLE_RATE: "0", SESSION_ROUTES: JSON.stringify({ "test-v1": "SESSIONS" }),
+  const service = new BashService({ LOG_SUCCESS_SAMPLE_RATE: "0", SESSION_ROUTES: JSON.stringify({ "test-v1": "SESSIONS" }),
     SESSIONS: { idFromName: () => ({}), get: () => ({}) },
   });
   assert.equal((await service.submit({ private: "private request" })).status, "rejected");

@@ -3,15 +3,13 @@ import { GatewayError, MAX_HTTP_BYTES, submission, hashJson, jsonValue, object }
 import { PI_BASH_RECEIVER, BASH_GATEWAY_PREVIEW_BYTES, bashTimeoutMs } from "@managed-agents/contracts";
 import type { BashContext } from "./context.ts";
 import { readLimited } from "./http.ts";
-import type { Env } from "./types.ts";
+import { parseExecutionGatewayUrl } from "@managed-agents/contracts";
 
 export { GatewayError };
 export class Gateway {
   readonly base: string;
-  constructor(readonly env: Env, readonly signal: AbortSignal) {
-    const url = new URL(env.EXECUTION_GATEWAY_URL);
-    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") throw Error("EXECUTION_GATEWAY_URL must be an HTTPS origin.");
-    this.base = url.origin;
+  constructor(gatewayUrl: string, readonly signal: AbortSignal) {
+    this.base = parseExecutionGatewayUrl(gatewayUrl);
   }
   async submit(input: BashInput, parsed: BashSubmission, requestId: string, context: BashContext): Promise<void> {
     const body = submission({ requestId, runtimeGeneration: parsed.execution.runtimeGeneration, operation: { operation: "execution.exec", params: execParams(input) }, callback: { receiver: PI_BASH_RECEIVER, context: jsonValue(context) } });

@@ -14,7 +14,6 @@
   },
   // Private service-binding worker; the execution gateway delivers completion RPC.
   "vars": {
-    "EXECUTION_GATEWAY_URL": "https://execution-api.acentric.dev",
     "SESSION_ROUTES": "{\"minimal-bash-v7\":\"MINIMAL_BASH_SESSIONS\",\"pi-no-compaction-v1\":\"PI_NO_COMPACTION_SESSIONS\"}"
   },
   "triggers": { "crons": [] },

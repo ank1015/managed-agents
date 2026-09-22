@@ -1,21 +1,21 @@
-import { parseBashInput, PI_BASH_RECEIVER } from "@managed-agents/contracts";
+import { parseExecutionGatewayUrl, parseBashInput, PI_BASH_RECEIVER } from "@managed-agents/contracts";
 import type { BashSubmission, BashInput } from "@managed-agents/contracts";
 import { machineSecret, object, identity, uuid, digest, routingFields, outcome, hashJson, jsonValue } from "@managed-agents/execution-gateway-protocol";
 import type { CompletionEvent } from "@managed-agents/execution-gateway-protocol";
 import { sha256 } from "./crypto.ts";
 
 export interface BashContext {
-  routeKey: string; sessionId: string; machineId: string; runtimeGeneration: string;
+  routeKey: string; sessionId: string; gatewayUrl: string; machineId: string; runtimeGeneration: string;
   operationId: string; submissionId: string; cwd: string; commandSha256: string;
   timeoutSeconds: number | null;
 }
 export function parseBashContext(value: unknown): BashContext {
-  const r = object(value, ["routeKey", "sessionId", "machineId", "runtimeGeneration", "operationId", "submissionId", "cwd", "commandSha256", "timeoutSeconds"]);
+  const r = object(value, ["routeKey", "sessionId", "gatewayUrl", "machineId", "runtimeGeneration", "operationId", "submissionId", "cwd", "commandSha256", "timeoutSeconds"]);
   for (const key of ["operationId", "submissionId"] as const) {
     if (typeof r[key] !== "string" || !r[key] || r[key].length > 2048) throw Error("Invalid bash correlation.");
   }
   const input = parseBashInput({ machineId: r.machineId, cwd: r.cwd, command: "", ...(r.timeoutSeconds === null ? {} : { timeout: r.timeoutSeconds }) });
-  return { routeKey: identity(r.routeKey), sessionId: identity(r.sessionId), machineId: input.machineId, runtimeGeneration: uuid(r.runtimeGeneration),
+  return { gatewayUrl: parseExecutionGatewayUrl(r.gatewayUrl), routeKey: identity(r.routeKey), sessionId: identity(r.sessionId), machineId: input.machineId, runtimeGeneration: uuid(r.runtimeGeneration),
     operationId: r.operationId as string,
     submissionId: r.submissionId as string, cwd: input.cwd, commandSha256: digest(r.commandSha256), timeoutSeconds: input.timeout ?? null };
 }
