@@ -8,6 +8,8 @@ function config(name: string) {
 
 test("bootstrap keeps the same Machine namespace but cannot take traffic or route callbacks", () => {
   const live = config("wrangler.jsonc"), bootstrap = config("wrangler.bootstrap.jsonc");
+  assert.equal(live.vars.MAX_CONCURRENT_DELIVERIES, "16");
+  assert.equal(live.vars.MAX_BUFFERED_BYTES, "16777216");
   const { routes: liveRoutes, services: liveServices, vars: liveVars, ...liveIdentity } = live;
   const { routes, services, vars, ...bootstrapIdentity } = bootstrap;
   assert.deepEqual(bootstrapIdentity, liveIdentity);

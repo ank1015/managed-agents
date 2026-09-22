@@ -1,6 +1,7 @@
 mod config;
 mod http;
 mod protocol;
+mod retry;
 mod runner;
 mod service;
 mod store;

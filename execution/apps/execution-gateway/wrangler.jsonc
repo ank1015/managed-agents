@@ -20,7 +20,7 @@
   "vars": {
     "CALLBACK_ROUTES": "{\"tool-pi-bash-v1\":\"BASH_EVENTS\",\"tool-pi-write-v1\":\"WRITE_EVENTS\",\"tool-pi-read-v1\":\"READ_EVENTS\",\"tool-pi-edit-v1\":\"EDIT_EVENTS\",\"tool-codex-apply-patch-v1\":\"APPLY_PATCH_EVENTS\"}",
     "MAX_PENDING_SUBMISSIONS": "8",
-    "MAX_CONCURRENT_DELIVERIES": "2",
+    "MAX_CONCURRENT_DELIVERIES": "16",
     "MAX_BUFFERED_BYTES": "16777216",
     "ACCEPT_TIMEOUT_MS": "5000",
     "CALLBACK_TIMEOUT_MS": "30000"

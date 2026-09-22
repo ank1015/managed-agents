@@ -211,3 +211,45 @@ test("peer close completes the WebSocket handshake and makes the machine offline
   const row = (await (await s.request(`/v1/machines/${machineId}`, "GET", undefined, await s.executionSecret())).json() as any).machine;
   assert.equal(row.connectionStatus, "offline"); assert.ok(row.lastDisconnectedAt);
 });
+
+test("sixteen concurrent result callbacks are allowed and excess deliveries remain retryable", async t => {
+  for (const configuredLimit of [undefined, "16", "2"]) {
+    await t.test(configuredLimit === undefined ? "default sixteen" : `configured ${configuredLimit}`, async t => {
+      const limit = Number(configuredLimit ?? 16);
+      const s = await stack({ vars: { ACCEPT_TIMEOUT_MS: "3000", CALLBACK_TIMEOUT_MS: "30000",
+        ...(configuredLimit === undefined ? {} : { MAX_CONCURRENT_DELIVERIES: configuredLimit }) } });
+      t.after(() => s.app.dispose());
+      const peer = await s.connect(await s.register()), secret = await s.executionSecret();
+      await s.faults({ hold: 1 });
+      const frames = [];
+      for (let i = 0; i <= limit; i++) {
+        const pending = s.request(`/v1/machines/${machineId}/requests`, "POST", input(`burst-${i}`), secret);
+        const frame = await peer.next("request"); peer.accept(frame);
+        assert.equal((await pending).status, 202); frames.push(frame);
+      }
+      for (const frame of frames.slice(0, limit)) await peer.result(frame);
+      await until(async () => (await (await s.receipts.fetch("https://receiver/snapshot")).json() as { held: number }).held === limit);
+      assert.equal(peer.messages.some(m => m.type === "result_nack"), false);
+      const excess = await peer.result(frames[limit]);
+      const busy = await peer.next("result_nack");
+      assert.equal(busy.deliveryId, excess.deliveryId);
+      assert.deepEqual(busy.error, { code: "DELIVERY_CAPACITY", retryable: true });
+
+      // The delivery budget is per machine, not shared across the gateway.
+      const otherId = crypto.randomUUID(), other = await s.connect(await s.register(otherId));
+      const independent = s.request(`/v1/machines/${otherId}/requests`, "POST", input("other", {
+        callback: { receiver: "test-v1", context: { sessionId: "other-session" } },
+      }), await s.executionSecret(otherId));
+      const otherFrame = await other.next("request"); other.accept(otherFrame);
+      assert.equal((await independent).status, 202);
+      await other.result(otherFrame); await other.next("result_ack");
+
+      await s.faults({ hold: 0 });
+      for (let i = 0; i < limit; i++) await peer.next("result_ack");
+      assert.equal((await s.events()).length, limit);
+      peer.send(excess);
+      assert.equal((await peer.next("result_ack")).deliveryId, excess.deliveryId);
+      assert.equal((await s.events()).length, limit + 1);
+    });
+  }
+});

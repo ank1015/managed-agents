@@ -2,6 +2,7 @@ use crate::{
     Result,
     config::{self, Config},
     protocol::{self, Action, Incoming},
+    retry::backoff,
     store::{self, Admission, Credential, Journal},
 };
 use futures_util::{SinkExt, StreamExt};
@@ -324,11 +325,6 @@ async fn read_json(socket: &mut Socket) -> Result<Value> {
         }
         _ => Err("expected gateway handshake JSON".into()),
     }
-}
-fn backoff(min: u64, max: u64, attempt: u32) -> u64 {
-    let ceiling = min.saturating_mul(1u64 << attempt.min(20)).min(max);
-    let jitter = u64::from_le_bytes(Uuid::new_v4().as_bytes()[..8].try_into().unwrap());
-    ceiling / 2 + jitter % (ceiling / 2 + 1)
 }
 async fn shutdown(directory: &Path, generation: Uuid) {
     let stop_file = async {
