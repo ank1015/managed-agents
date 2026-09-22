@@ -21,7 +21,7 @@ test("real new gateway, Machine DO, daemon/core, apply-patch worker and durable 
   const backend="apply-patch-test-backend-secret-at-least-32-bytes",common={modules:true,compatibilityDate:"2026-07-30",compatibilityFlags:["nodejs_compat"]};
   const app=new Miniflare({log:new Log(LogLevel.ERROR),workers:[
     {...common,name:"gateway",script:gateway,bindings:{MANAGEMENT_SECRET:backend,CREDENTIAL_SIGNING_SECRET:auth,ROUTING_SIGNING_SECRET:auth+"routing",CALLBACK_TIMEOUT_MS:"30000",CALLBACK_ROUTES:JSON.stringify({"tool-codex-apply-patch-v1":"APPLY_PATCH_EVENTS"})},durableObjects:{MACHINES:{className:"Machine",useSQLite:true}},serviceBindings:{APPLY_PATCH_EVENTS:{name:"apply-patch",entrypoint:"CodexApplyPatchCallbacks"}}},
-    {...common,name:"apply-patch",script:patchWorker,bindings:{EXECUTION_GATEWAY_URL:"https://gateway.test",SESSION_ROUTES:JSON.stringify({"test-v1":"SESSIONS"})},durableObjects:{SESSIONS:{className:"TestSession",scriptName:"host"}},outboundService:{name:"gateway"}},
+    {...common,name:"apply-patch",script:patchWorker,bindings:{SESSION_ROUTES:JSON.stringify({"test-v1":"SESSIONS"})},durableObjects:{SESSIONS:{className:"TestSession",scriptName:"host"}},outboundService:{name:"gateway"}},
     {...common,name:"host",script:host,serviceBindings:{APPLY_PATCH:{name:"apply-patch",entrypoint:"CodexApplyPatch"},APPLY_PATCH_EVENTS:{name:"apply-patch",entrypoint:"CodexApplyPatchCallbacks"}},durableObjects:{SESSIONS:{className:"TestSession",useSQLite:true}}},
   ]});
   const binary=join(root,"execution/target/debug/process-execution-daemon");
@@ -39,7 +39,7 @@ test("real new gateway, Machine DO, daemon/core, apply-patch worker and durable 
   const runtimeGeneration=row.runtimeGeneration;
   async function call(path:string,body:unknown){const r=await hostApi.fetch("https://host"+path,{method:"POST",body:JSON.stringify(body)});assert.ok(r.ok,await r.clone().text());return r.json() as Promise<any>;}
   async function apply(patch: string, cwd = dir) {
-    const sessionId = randomUUID(), execution = { token: executionSecret, runtimeGeneration };
+    const sessionId = randomUUID(), execution = { gatewayUrl: "https://gateway.test", token: executionSecret, runtimeGeneration };
     const nativeInput = { ...input, machineId, cwd, patch };
     await call("/start", { sessionId, execution, input: nativeInput });
     const snapshot = await until(async () => { const s = await call("/snapshot", { sessionId }) as Snapshot; return s.results.length ? s : undefined; });

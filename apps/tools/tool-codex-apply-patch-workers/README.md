@@ -2,7 +2,7 @@
 
 Standalone, stateless `tool-codex-apply-patch/apply_patch/v1` provider. Each call
 submits one native `filesystem.patch` request using `format: "codex"` through the
-machine-only execution gateway. This breaking contract is deployed; see the [deployment record](../../../execution/DEPLOYMENT.md).
+machine-only execution gateway. See the [earlier deployment record](../../../execution/DEPLOYMENT.md); the per-session gateway URL contract requires a coordinated rollout.
 Its production session routes remain empty until a harness adopts apply_patch.
 Neither production harness currently exposes this tool.
 
@@ -43,7 +43,7 @@ The private harness-to-worker RPC is:
 ```ts
 {
   destination: { routeKey, sessionId },
-  execution: { token, runtimeGeneration },
+  execution: { gatewayUrl, token, runtimeGeneration },
   submission: {
     operationId, submissionId,
     request: {
@@ -181,8 +181,11 @@ There is no worker database, Durable Object ownership, Queue, or cron.
 
 ## Deployment and adoption
 
-1. Deploy this worker at `managed-agents-tool-codex-apply-patch` with the new
-   `EXECUTION_GATEWAY_URL`. No static execution credential is required.
+App-owned gateways must implement the [tool-facing contract](../GATEWAY-CONTRACT.md),
+including the private callback binding; the gateway URL alone does not configure delivery.
+
+1. Deploy this worker at `managed-agents-tool-codex-apply-patch`.
+   The harness supplies `execution.gatewayUrl`; no deployment-wide URL or static execution credential is required.
 2. The gateway's checked-in private binding routes
    `tool-codex-apply-patch-v1 → APPLY_PATCH_EVENTS → CodexApplyPatchCallbacks`.
    There is no separate callback router.
