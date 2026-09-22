@@ -10,6 +10,7 @@ type Job = { id: string; serialized: string; outcome: string | null; submissions
 export class FakeJobs extends DurableObject<TestEnv> {
   constructor(ctx: DurableObjectState, env: TestEnv) {
     super(ctx, env);
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS discovery(url TEXT NOT NULL, authorization TEXT)");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, serialized TEXT NOT NULL, outcome TEXT, submissions INTEGER NOT NULL DEFAULT 1)");
   }
   async submit(serialized: string): Promise<string> {
@@ -23,6 +24,10 @@ export class FakeJobs extends DurableObject<TestEnv> {
     });
     return JSON.stringify({ status: "accepted", jobId: id });
   }
+  discover(url: string, authorization: string | null): void {
+    this.ctx.storage.sql.exec("INSERT INTO discovery VALUES (?, ?)", url, authorization);
+  }
+  discoveries(): string { return JSON.stringify(this.ctx.storage.sql.exec("SELECT * FROM discovery ORDER BY rowid").toArray()); }
   list(): string { return JSON.stringify(this.ctx.storage.sql.exec<Job>("SELECT * FROM jobs ORDER BY rowid").toArray().map(row => ({ ...row, request: JSON.parse(row.serialized) }))); }
   async finish(id: string, serializedOutcome: string, deliver = true): Promise<string> {
     const row = this.ctx.storage.sql.exec<Job>("SELECT * FROM jobs WHERE id = ?", id).one();
@@ -35,7 +40,7 @@ export class FakeJobs extends DurableObject<TestEnv> {
     const completion = { operationId: request.submission.operationId, submissionId: request.submission.submissionId,
       provider: request.submission.request.provider, jobId: id, outcome };
     return JSON.stringify(await ns.get(ns.idFromName(request.destination.sessionId)).sessionRequest(request.execution ? {
-      action: "acceptToolCompletion", value: { completion, execution: { runtimeGeneration: request.execution.runtimeGeneration,
+      action: "acceptToolCompletion", value: { completion, execution: { gatewayUrl: request.execution.gatewayUrl, runtimeGeneration: request.execution.runtimeGeneration,
         machineId: (request.submission.request.input as { machineId: string }).machineId } },
     } : { action: "acceptCompletion", value: completion }));
   }
@@ -46,10 +51,14 @@ export class FakeOperations extends WorkerEntrypoint<TestEnv> {
 export default {
   async fetch(request, env): Promise<Response> {
     const machine = await machineFixture(request);
-    if (machine) return machine;
+    if (machine) {
+      await env.JOBS.get(env.JOBS.idFromName("jobs")).discover(request.url, request.headers.get("Authorization"));
+      return machine;
+    }
     const path = new URL(request.url).pathname;
     const jobs = env.JOBS.get(env.JOBS.idFromName("jobs"));
     if (path === "/jobs") return new Response(await jobs.list());
+    if (path === "/discoveries") return new Response(await jobs.discoveries());
     if (path === "/finish") {
       const body = await request.json() as { id: string; outcome: OperationOutcome; deliver?: boolean };
       return new Response(await jobs.finish(body.id, JSON.stringify(body.outcome), body.deliver));

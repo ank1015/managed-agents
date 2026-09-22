@@ -48,8 +48,5 @@
       "database_id": "f3073080-5ca3-44f1-9466-ae5fe6524fff",
       "migrations_dir": "../agent-api/migrations"
     }
-  ],
-  "vars": {
-    "EXECUTION_GATEWAY_URL": "https://execution-api.acentric.dev"
-  }
+  ]
 }
