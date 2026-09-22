@@ -1,21 +1,21 @@
-import { parseEditInput, PI_EDIT_MAX_EDITS, PI_EDIT_RECEIVER } from "@managed-agents/contracts";
+import { parseExecutionGatewayUrl, parseEditInput, PI_EDIT_MAX_EDITS, PI_EDIT_RECEIVER } from "@managed-agents/contracts";
 import type { EditSubmission, EditInput } from "@managed-agents/contracts";
 import { machineSecret, object, identity, uuid, integer, digest, routingFields, outcome, hashJson, jsonValue } from "@managed-agents/execution-gateway-protocol";
 import type { CompletionEvent } from "@managed-agents/execution-gateway-protocol";
 import { sha256 } from "./crypto.ts";
 
 export interface EditContext {
-  routeKey: string; sessionId: string; machineId: string; runtimeGeneration: string;
+  routeKey: string; sessionId: string; gatewayUrl: string; machineId: string; runtimeGeneration: string;
   operationId: string; submissionId: string; cwd: string; path: string;
   editsSha256: string; editCount: number;
 }
 export function parseEditContext(value: unknown): EditContext {
-  const r = object(value, ["routeKey", "sessionId", "machineId", "runtimeGeneration", "operationId", "submissionId", "cwd", "path", "editsSha256", "editCount"]);
+  const r = object(value, ["routeKey", "sessionId", "gatewayUrl", "machineId", "runtimeGeneration", "operationId", "submissionId", "cwd", "path", "editsSha256", "editCount"]);
   for (const key of ["operationId", "submissionId"] as const) {
     if (typeof r[key] !== "string" || !r[key] || r[key].length > 2048) throw Error("Invalid edit correlation.");
   }
   const input = parseEditInput({ machineId: r.machineId, cwd: r.cwd, path: r.path, edits: [{oldText: "x", newText: ""}] });
-  return { routeKey: identity(r.routeKey), sessionId: identity(r.sessionId), machineId: input.machineId, runtimeGeneration: uuid(r.runtimeGeneration),
+  return { gatewayUrl: parseExecutionGatewayUrl(r.gatewayUrl), routeKey: identity(r.routeKey), sessionId: identity(r.sessionId), machineId: input.machineId, runtimeGeneration: uuid(r.runtimeGeneration),
     operationId: r.operationId as string,
     submissionId: r.submissionId as string, cwd: input.cwd, path: input.path,
     editsSha256: digest(r.editsSha256), editCount: integer(r.editCount, 1, PI_EDIT_MAX_EDITS) };

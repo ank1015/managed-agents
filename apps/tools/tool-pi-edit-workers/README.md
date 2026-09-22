@@ -40,7 +40,7 @@ Private `PiEdit.submit` returns `{ result }` and requires:
 ```ts
 {
   destination: { routeKey, sessionId },
-  execution: { token, runtimeGeneration },
+  execution: { gatewayUrl, token, runtimeGeneration },
   submission: {
     operationId, submissionId,
     request: {
@@ -110,7 +110,7 @@ Guarantees are bounded by runtime lifetime and daemon journal retention.
 - Diff: at most **64 KiB**, with explicit truncation/omission metadata.
 - Submission deadline: seven seconds; callback admission: six seconds.
 
-Set `EXECUTION_GATEWAY_URL=https://execution-api.acentric.dev`, `SESSION_ROUTES` and
+Set `SESSION_ROUTES` and
 matching session namespace bindings. Machine config routes
 `tool-pi-edit-v1 → EDIT_EVENTS → managed-agents-tool-pi-edit#PiEditCallbacks`.
 No gateway account secret, adapter D1, DO, Queue or polling is needed. Public HTTP
@@ -118,7 +118,7 @@ exposes only GET `/health`. Timeout does not undo an accepted mutation.
 
 Production harness execution-context integration is implemented. Coordinate its
 deployment and drain old edits before rollout. Deploy this worker before the
-gateway with its matching private callback binding. This contract is deployed; see the [deployment record](../../../execution/DEPLOYMENT.md).
+gateway with its matching private callback binding. See the [earlier deployment record](../../../execution/DEPLOYMENT.md). Deploy matching hosts and tools for the per-session gateway URL contract.
 
 ## Verification
 
@@ -133,13 +133,13 @@ batches against original content, BOM/CRLF, ambiguity, symlinks, file limits and
 replay of an older edit after a later mutation. It leaves the installed daemon alone.
 
 
-The harness supplies `execution: { token, runtimeGeneration }` on every submit.
+The harness supplies `execution: { gatewayUrl, token, runtimeGeneration }` on every submit.
 The token must be this machine's `me1.…` execution secret. This worker neither
 stores nor discovers, rotates or refreshes it. Different submissions can target
-different machines with different tokens; the harness owns that choice.
+different gateways and machines with different tokens; the harness owns that choice.
 Credential storage and replacement are outside this tool's contract.
 
-Only the current [execution gateway](../../../execution/apps/execution-gateway/README.md)
+Any gateway implementing the [tool-facing gateway contract](../GATEWAY-CONTRACT.md)
 is supported. User credentials, temporary grants, daemon secrets, legacy jobs
 responses and public webhook envelopes are rejected; there is no compatibility
 fallback. Malformed replies after dispatch are uncertain and must be retried with
