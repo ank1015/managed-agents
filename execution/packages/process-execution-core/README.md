@@ -209,8 +209,9 @@ grace periods. Defaults include:
   a fresh runtime is required to reset that ledger.
 
 Python and Node paths are configurable and checked lazily on REPL creation.
-Python requires IPython (`python -m pip install 'ipython>=8,<10'`). There is no
-Node package installation. This implementation was exercised on macOS with
+Python requires IPython (`python -m pip install 'ipython>=8,<10'`). The Node REPL
+targets Node.js 26. There is no Node package installation.
+This implementation was exercised on macOS with
 Python 3.12.8 / IPython 9.8.0 and Node 26.8.2; other host/runtime versions need
 platform verification. Unix process groups and Windows Job/ConPTY backends are
 included; the Windows backend has not been exercised in this change.

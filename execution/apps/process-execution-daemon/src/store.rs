@@ -142,24 +142,9 @@ impl Journal {
             key TEXT PRIMARY KEY, hash TEXT NOT NULL, input_hash TEXT NOT NULL, metadata TEXT NOT NULL,
             ticket TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT, result_hash TEXT, delivery_id TEXT,
             created INTEGER NOT NULL, completed INTEGER, acked INTEGER, next_attempt INTEGER NOT NULL DEFAULT 0,
-            attempts INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL, reason TEXT);
+            attempts INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL, reason TEXT,
+            execution_ms REAL, first_sent INTEGER, last_delivery_error TEXT);
           CREATE INDEX IF NOT EXISTS deliveries ON requests(delivery_id);")?;
-        let columns: Vec<String> = db
-            .prepare("PRAGMA table_info(requests)")?
-            .query_map([], |row| row.get(1))?
-            .collect::<rusqlite::Result<_>>()?;
-        if !columns.iter().any(|c| c == "execution_ms") {
-            db.execute("ALTER TABLE requests ADD COLUMN execution_ms REAL", [])?;
-        }
-        if !columns.iter().any(|c| c == "first_sent") {
-            db.execute("ALTER TABLE requests ADD COLUMN first_sent INTEGER", [])?;
-        }
-        if !columns.iter().any(|c| c == "last_delivery_error") {
-            db.execute(
-                "ALTER TABLE requests ADD COLUMN last_delivery_error TEXT",
-                [],
-            )?;
-        }
         Ok(Self { db: Mutex::new(db) })
     }
     pub fn admit(&self, req: &Incoming, native: bool, config: &Config) -> Result<Admission> {
@@ -343,6 +328,33 @@ mod tests {
     use super::*;
     fn request(generation: Uuid) -> Incoming {
         serde_json::from_value(json!({"type":"request","protocolVersion":1,"dispatchId":Uuid::new_v4(),"requestId":"one","requestHash":"a".repeat(64),"runtimeGeneration":generation,"operation":{"operation":"runtime.capabilities","params":{}},"routingEnvelope":"saved-ticket"})).unwrap()
+    }
+    #[test]
+    fn fresh_journal_has_the_complete_schema_and_reopens_without_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = request(Uuid::new_v4());
+        let j = Journal::open(dir.path()).unwrap();
+        j.admit(&req, false, &Config::default()).unwrap();
+        j.complete_timed(
+            &req.key(),
+            &json!({"status":"ok","result":"retained"}),
+            Some(2.5),
+        )
+        .unwrap();
+        let original = j.next().unwrap().unwrap().frame;
+        let schema: String =
+            j.db.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='requests'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+        assert!(schema.contains("execution_ms REAL, first_sent INTEGER, last_delivery_error TEXT"));
+        drop(j);
+        let reopened = Journal::open(dir.path()).unwrap();
+        assert_eq!(reopened.next().unwrap().unwrap().frame, original);
     }
     #[test]
     fn crash_recovery_does_not_rerun_and_requires_matching_ack() {

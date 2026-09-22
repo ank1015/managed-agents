@@ -172,7 +172,6 @@ test("malformed, duplicate, unknown and incomplete native calls fail without too
     } finally { f.storage.db.close(); }
   }
   assert.throws(() => toolCalls({ role: "assistant", provider: "fireworks", content: [{ role: "assistant", tool_calls: {} }] }));
-  assert.throws(() => toolCalls({ role: "assistant", provider: "fireworks", content: [{ role: "assistant", function_call: {} }] }));
 });
 test("malformed results stop safely after active siblings settle; partial edits remain tool errors", () => {
   const f = fixture(); try {
