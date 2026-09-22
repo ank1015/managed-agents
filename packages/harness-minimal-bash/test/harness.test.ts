@@ -10,7 +10,7 @@ import { minimalBashHarness, parseMinimalBashConfig, parseMinimalBashInput, read
 import { appendMessage } from "../src/state.ts";
 import { buildLlmInput } from "../src/openai.ts";
 
-const config = { provider: "openai", modelId: "gpt-5.6-sol", accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", executionToken: `me1.22222222-2222-4222-8222-222222222222.1.${"x".repeat(43)}`, cwd: "/workspace" };
+const config = { provider: "openai", modelId: "gpt-5.6-sol", accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", executionGatewayUrl: "https://gateway.test", executionToken: `me1.22222222-2222-4222-8222-222222222222.1.${"x".repeat(43)}`, cwd: "/workspace" };
 class Storage {
   db = new DatabaseSync(":memory:");
   sql = { exec: (query: string, ...bindings: SQLInputValue[]) => {

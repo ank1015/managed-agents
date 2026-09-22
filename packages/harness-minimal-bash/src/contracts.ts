@@ -1,4 +1,4 @@
-import { ContractException, parseExecutionToken, isAbsoluteMachinePath, parseEventBody, parseJsonValue, parseLlmMessage, parseUuid } from "@managed-agents/contracts";
+import { ContractException, parseExecutionGatewayUrl, parseExecutionToken, isAbsoluteMachinePath, parseEventBody, parseJsonValue, parseLlmMessage, parseUuid } from "@managed-agents/contracts";
 import type { EventBody, JsonValue, LlmMessage } from "@managed-agents/contracts";
 
 export const MINIMAL_BASH_IDENTITY = Object.freeze({ id: "minimal-bash", version: "v7" });
@@ -19,6 +19,7 @@ export interface MinimalBashConfig {
   accountId: string;
   reasoning: ReasoningLevel;
   machineId: string;
+  executionGatewayUrl: string;
   executionToken: string;
   cwd: string;
 }
@@ -35,7 +36,7 @@ function fields(value: unknown, keys: string[]): Record<string, JsonValue> {
 }
 export function parseMinimalBashConfig(value: JsonValue): MinimalBashConfig {
   try {
-    const c = fields(value, ["provider", "modelId", "accountId", "reasoning", "machineId", "executionToken", "cwd"]);
+    const c = fields(value, ["provider", "modelId", "accountId", "reasoning", "machineId", "executionGatewayUrl", "executionToken", "cwd"]);
     if (c.provider !== "openai") throw new Error("provider must be openai.");
     if (typeof c.modelId !== "string" || !Object.hasOwn(OPENAI_MODELS, c.modelId)) throw new Error("modelId must belong to the OpenAI catalog.");
     const reasoning = c.reasoning ?? "medium";
@@ -45,7 +46,8 @@ export function parseMinimalBashConfig(value: JsonValue): MinimalBashConfig {
     const machineId = parseUuid(c.machineId), executionToken = parseExecutionToken(c.executionToken);
     if (executionToken.split(".")[1] !== machineId) throw new Error("executionToken must belong to machineId.");
     return { provider: "openai", modelId: c.modelId as MinimalBashConfig["modelId"],
-      accountId: parseUuid(c.accountId), reasoning: reasoning as ReasoningLevel, machineId, executionToken, cwd: c.cwd };
+      accountId: parseUuid(c.accountId), reasoning: reasoning as ReasoningLevel, machineId, executionToken,
+      executionGatewayUrl: parseExecutionGatewayUrl(c.executionGatewayUrl), cwd: c.cwd };
   } catch (error) { throw new ContractException("INVALID_CONFIG", error instanceof Error ? error.message : "Invalid minimal bash configuration."); }
 }
 export function parseMinimalBashInput(value: EventBody): MinimalBashInput {
