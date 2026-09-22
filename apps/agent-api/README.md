@@ -1,7 +1,7 @@
 # Agent API
 
-> Deployed with the machine-secret execution contract on 2026-09-21 UTC.
-> Use fresh enrollment and sessions; see the [deployment record](../../execution/DEPLOYMENT.md).
+> The [deployment record](../../execution/DEPLOYMENT.md) describes the earlier machine-secret release.
+> The per-session gateway URL contract requires matching hosts/tools and fresh sessions.
 
 Authenticated backend access to minimal-bash and Pi no-compaction sessions. The API owns authentication, authoritative D1 session routing and creation recovery. Session objects own input admission, transactions, operations and alarms. The API imports shared contracts, never a harness implementation or the session runtime.
 
@@ -63,7 +63,7 @@ Create a session:
 {
   "requestId": "create-agent-123",
   "harness": { "id": "minimal-bash", "version": "v7" },
-  "config": { "provider": "openai", "modelId": "gpt-5.6-sol", "accountId": "11111111-1111-4111-8111-111111111111", "machineId": "22222222-2222-4222-8222-222222222222", "executionToken": "<machine execution secret>", "cwd": "/workspace" },
+  "config": { "provider": "openai", "modelId": "gpt-5.6-sol", "accountId": "11111111-1111-4111-8111-111111111111", "machineId": "22222222-2222-4222-8222-222222222222", "executionGatewayUrl": "https://execution-api.acentric.dev", "executionToken": "<machine execution secret>", "cwd": "/workspace" },
   "metadata": { "title": "My coding session", "source": "example" }
 }
 ```
@@ -134,7 +134,8 @@ Session creation accepts only `requestId`, `harness`, `config`, and `metadata`.
 The API does not define an execution credential shape. Each harness validates its
 configuration during initialization.
 
-Both current coding harnesses require `config.executionToken`, the machine's
+Both current coding harnesses require `config.executionGatewayUrl`, an HTTPS origin,
+and `config.executionToken`, the machine's
 `me1.…` execution secret, alongside `config.machineId`. The host stores it once
 as part of resolved immutable configuration and omits it from session response
 projections. It never enters LLM input or transcripts. The API directory retains

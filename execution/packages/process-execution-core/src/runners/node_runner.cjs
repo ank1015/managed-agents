@@ -41,11 +41,11 @@ server.context.runtime={
   emitJson: data => event('json',{data}),
   displayImage: async path => {const result=await call('filesystem.read',{path,cwd:null,mode:'image'});event('image',{image:result.image});},
 };
-// REPL runtime exceptions bypass the eval callback. Older Node versions route
-// them through the REPL domain; newer versions honor an active caller domain.
+// REPL runtime exceptions bypass the eval callback. Capture them in the caller
+// domain on the supported Node runtime; never depend on private REPL internals.
 function evaluate(code,id) {
   return new Promise(resolve=>{
-    const domain = server._domain || createDomain();
+    const domain = createDomain();
     let settled = false;
     function finish(error,result) {
       if (settled) return;

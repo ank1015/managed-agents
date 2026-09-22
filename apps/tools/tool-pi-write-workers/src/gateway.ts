@@ -5,15 +5,13 @@ import { GatewayError, MAX_HTTP_BYTES, submission, hashJson, jsonValue, object }
 import { PI_WRITE_RECEIVER } from "@managed-agents/contracts";
 import type { WriteContext } from "./context.ts";
 import { readLimited } from "./http.ts";
-import type { Env } from "./types.ts";
+import { parseExecutionGatewayUrl } from "@managed-agents/contracts";
 
 export { GatewayError };
 export class Gateway {
   readonly base: string;
-  constructor(readonly env: Env, readonly signal: AbortSignal) {
-    const url = new URL(env.EXECUTION_GATEWAY_URL);
-    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") throw Error("EXECUTION_GATEWAY_URL must be an HTTPS origin.");
-    this.base = url.origin;
+  constructor(gatewayUrl: string, readonly signal: AbortSignal) {
+    this.base = parseExecutionGatewayUrl(gatewayUrl);
   }
   async submit(input: WriteInput, parsed: WriteSubmission, requestId: string, context: WriteContext): Promise<void> {
     // Binary encoding bounds JSON expansion even for NUL/control-heavy UTF-8 text.

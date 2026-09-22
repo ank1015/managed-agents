@@ -37,8 +37,9 @@ export function toolCalls(message: LlmAssistantMessage): ToolCall[] {
     if (message.content.length !== 1) throw new HarnessFailure("INVALID_LLM_RESPONSE", "Expected one native Fireworks assistant message.");
     const item = object(message.content[0]);
     if (item.role !== "assistant" || (item.content !== undefined && item.content !== null && typeof item.content !== "string")
-      || (item.reasoning_content !== undefined && item.reasoning_content !== null && typeof item.reasoning_content !== "string")
-      || item.function_call != null) throw new HarnessFailure("INVALID_LLM_RESPONSE", "Malformed or legacy Fireworks assistant message.");
+      || (item.reasoning_content !== undefined && item.reasoning_content !== null && typeof item.reasoning_content !== "string")) {
+      throw new HarnessFailure("INVALID_LLM_RESPONSE", "Malformed Fireworks assistant message.");
+    }
     if (item.tool_calls !== undefined && item.tool_calls !== null) {
       if (!Array.isArray(item.tool_calls)) throw new HarnessFailure("INVALID_TOOL_CALL", "Malformed Fireworks tool calls.");
       for (const raw of item.tool_calls) {

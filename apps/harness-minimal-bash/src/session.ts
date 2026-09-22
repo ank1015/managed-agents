@@ -15,7 +15,7 @@ export class MinimalBashSessionV7 extends DurableObject<Env> {
   readonly #driver: SessionDriver<MinimalBashConfig, MinimalBashInput>;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.#execution = new SessionExecution(ctx.storage, env.EXECUTION_GATEWAY_URL);
+    this.#execution = new SessionExecution(ctx.storage);
     const adapter = (binding: Env["LLM"], tool = false): OperationProvider => ({
       submit: async submission => {
         const session = this.#driver.getSession();

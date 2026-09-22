@@ -22,7 +22,7 @@ test("real new gateway, Machine DO, daemon/core, read worker and durable Session
   const images = new FakeImages();
   const app: Miniflare = new Miniflare({log:new Log(LogLevel.ERROR),workers:[
     {...common,name:"gateway",script:gateway,bindings:{MANAGEMENT_SECRET:backend,CREDENTIAL_SIGNING_SECRET:auth,ROUTING_SIGNING_SECRET:auth+"routing",CALLBACK_TIMEOUT_MS:"30000",CALLBACK_ROUTES:JSON.stringify({"tool-pi-read-v1":"READ_EVENTS"})},durableObjects:{MACHINES:{className:"Machine",useSQLite:true}},serviceBindings:{READ_EVENTS:{name:"read",entrypoint:"PiReadCallbacks"}}},
-    {...common,name:"read",script:read,bindings:{EXECUTION_GATEWAY_URL:"https://gateway.test",SESSION_ROUTES:JSON.stringify({"test-v1":"SESSIONS"}), CLOUDFLARE_IMAGES_ACCOUNT_ID: imageAccountId, CLOUDFLARE_IMAGES_API_TOKEN: "images-key", CLOUDFLARE_IMAGES_VARIANT: "piread"},durableObjects:{SESSIONS:{className:"TestSession",scriptName:"host"}},outboundService: async (request: WorkerRequest) => new URL(request.url).hostname === "api.cloudflare.com" ? images.fetch(request) : (await app.getWorker("gateway")).fetch(request)},
+    {...common,name:"read",script:read,bindings:{SESSION_ROUTES:JSON.stringify({"test-v1":"SESSIONS"}), CLOUDFLARE_IMAGES_ACCOUNT_ID: imageAccountId, CLOUDFLARE_IMAGES_API_TOKEN: "images-key", CLOUDFLARE_IMAGES_VARIANT: "piread"},durableObjects:{SESSIONS:{className:"TestSession",scriptName:"host"}},outboundService: async (request: WorkerRequest) => new URL(request.url).hostname === "api.cloudflare.com" ? images.fetch(request) : (await app.getWorker("gateway")).fetch(request)},
     {...common,name:"host",script:host,serviceBindings:{READ:{name:"read",entrypoint:"PiRead"},READ_EVENTS:{name:"read",entrypoint:"PiReadCallbacks"}},durableObjects:{SESSIONS:{className:"TestSession",useSQLite:true}}},
   ]});
   const binary=join(root,"execution/target/debug/process-execution-daemon");
@@ -40,7 +40,7 @@ test("real new gateway, Machine DO, daemon/core, read worker and durable Session
   const runtimeGeneration=row.runtimeGeneration;
   async function call(path:string,body:unknown){const r=await hostApi.fetch("https://host"+path,{method:"POST",body:JSON.stringify(body)});assert.ok(r.ok,await r.clone().text());return r.json() as Promise<any>;}
   async function readViaTool(path: string, paging: {offset?: number; limit?: number} = {}) {
-    const sessionId = randomUUID(), execution = { token: executionSecret, runtimeGeneration };
+    const sessionId = randomUUID(), execution = { gatewayUrl: "https://gateway.test", token: executionSecret, runtimeGeneration };
     await call("/start", { sessionId, execution, input: { ...input, machineId, cwd: dir, path, ...paging } });
     const snapshot = await until(async () => { const s = await call("/snapshot", { sessionId }) as Snapshot; return s.results.length ? s : undefined; }, 20000);
     const outcome = snapshot.operations[0]!.outcome; assert.equal(outcome?.status, "succeeded", logs + JSON.stringify(outcome));
@@ -57,7 +57,7 @@ test("real new gateway, Machine DO, daemon/core, read worker and durable Session
   executionSecret = rotated.secret;
   await assert.rejects(call("/submit", {
     destination: { routeKey: "test-v1", sessionId: randomUUID() },
-    execution: { token: oldSecret, runtimeGeneration },
+    execution: { gatewayUrl: "https://gateway.test", token: oldSecret, runtimeGeneration },
     submission: { operationId: "revoked-attempt", submissionId: "revoked-attempt",
       request: { provider: "tool-pi-read", type: "read", version: "v1", input: { ...input, machineId, cwd: dir, path: "file.txt" } } },
   }), /INVALID_SECRET/);

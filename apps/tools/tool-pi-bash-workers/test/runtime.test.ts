@@ -20,7 +20,7 @@ test("real new gateway, Machine DO, daemon/core, bash worker and durable Session
   const backend="bash-test-backend-secret-at-least-32-bytes",common={modules:true,compatibilityDate:"2026-07-30",compatibilityFlags:["nodejs_compat"]};
   const app=new Miniflare({log:new Log(LogLevel.ERROR),workers:[
     {...common,name:"gateway",script:gateway,bindings:{MANAGEMENT_SECRET:backend,CREDENTIAL_SIGNING_SECRET:auth,ROUTING_SIGNING_SECRET:auth+"routing",CALLBACK_TIMEOUT_MS:"30000",CALLBACK_ROUTES:JSON.stringify({"tool-pi-bash-v1":"BASH_EVENTS"})},durableObjects:{MACHINES:{className:"Machine",useSQLite:true}},serviceBindings:{BASH_EVENTS:{name:"bash",entrypoint:"PiBashCallbacks"}}},
-    {...common,name:"bash",script:bash,bindings:{EXECUTION_GATEWAY_URL:"https://gateway.test",SESSION_ROUTES:JSON.stringify({"test-v1":"SESSIONS"})},durableObjects:{SESSIONS:{className:"TestSession",scriptName:"host"}},outboundService:{name:"gateway"}},
+    {...common,name:"bash",script:bash,bindings:{SESSION_ROUTES:JSON.stringify({"test-v1":"SESSIONS"})},durableObjects:{SESSIONS:{className:"TestSession",scriptName:"host"}},outboundService:{name:"gateway"}},
     {...common,name:"host",script:host,serviceBindings:{BASH:{name:"bash",entrypoint:"PiBash"},BASH_EVENTS:{name:"bash",entrypoint:"PiBashCallbacks"}},durableObjects:{SESSIONS:{className:"TestSession",useSQLite:true}}},
   ]});
   const binary=join(root,"execution/target/debug/process-execution-daemon");
@@ -38,7 +38,7 @@ test("real new gateway, Machine DO, daemon/core, bash worker and durable Session
   const runtimeGeneration=row.runtimeGeneration;
   async function call(path:string,body:unknown){const r=await hostApi.fetch("https://host"+path,{method:"POST",body:JSON.stringify(body)});assert.ok(r.ok,await r.clone().text());return r.json() as Promise<any>;}
   async function bashViaTool(command: string, timeout?: number) {
-    const sessionId = randomUUID(), execution = {token: executionSecret, runtimeGeneration };
+    const sessionId = randomUUID(), execution = { gatewayUrl: "https://gateway.test", token: executionSecret, runtimeGeneration };
     const toolInput = {machineId, cwd: dir, command, ...(timeout === undefined ? {} : {timeout})};
     const started = Date.now();
     await call("/start", {sessionId, execution, input: toolInput});
@@ -58,7 +58,7 @@ test("real new gateway, Machine DO, daemon/core, bash worker and durable Session
   executionSecret = rotated.secret;
   await assert.rejects(call("/submit", {
     destination: { routeKey: "test-v1", sessionId: randomUUID() },
-    execution: { token: oldSecret, runtimeGeneration },
+    execution: { gatewayUrl: "https://gateway.test", token: oldSecret, runtimeGeneration },
     submission: { operationId: "revoked-attempt", submissionId: "revoked-attempt",
       request: { provider: "tool-pi-bash", type: "bash", version: "v1", input: { ...input, machineId, cwd: dir } } },
   }), /INVALID_SECRET/);

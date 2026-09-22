@@ -1,21 +1,21 @@
-import { parseReadInput, PI_READ_RECEIVER } from "@managed-agents/contracts";
+import { parseExecutionGatewayUrl, parseReadInput, PI_READ_RECEIVER } from "@managed-agents/contracts";
 import type { ReadSubmission, ReadInput } from "@managed-agents/contracts";
 import { machineSecret, object, identity, uuid, digest, routingFields, outcome, hashJson, jsonValue } from "@managed-agents/execution-gateway-protocol";
 import type { CompletionEvent } from "@managed-agents/execution-gateway-protocol";
 import { sha256 } from "./crypto.ts";
 
 export interface ReadContext {
-  routeKey: string; sessionId: string; machineId: string; runtimeGeneration: string;
+  routeKey: string; sessionId: string; gatewayUrl: string; machineId: string; runtimeGeneration: string;
   operationId: string; submissionId: string; cwd: string; path: string;
   offset: number | null; limit: number | null;
 }
 export function parseReadContext(value: unknown): ReadContext {
-  const r = object(value, ["routeKey", "sessionId", "machineId", "runtimeGeneration", "operationId", "submissionId", "cwd", "path", "offset", "limit"]);
+  const r = object(value, ["routeKey", "sessionId", "gatewayUrl", "machineId", "runtimeGeneration", "operationId", "submissionId", "cwd", "path", "offset", "limit"]);
   for (const key of ["operationId", "submissionId"] as const) {
     if (typeof r[key] !== "string" || !r[key] || r[key].length > 2048) throw Error("Invalid read correlation.");
   }
   const input = parseReadInput({ machineId: r.machineId, cwd: r.cwd, path: r.path, ...(r.offset === null ? {} : { offset: r.offset }), ...(r.limit === null ? {} : { limit: r.limit }) });
-  return { routeKey: identity(r.routeKey), sessionId: identity(r.sessionId), machineId: input.machineId, runtimeGeneration: uuid(r.runtimeGeneration),
+  return { gatewayUrl: parseExecutionGatewayUrl(r.gatewayUrl), routeKey: identity(r.routeKey), sessionId: identity(r.sessionId), machineId: input.machineId, runtimeGeneration: uuid(r.runtimeGeneration),
     operationId: r.operationId as string,
     submissionId: r.submissionId as string, cwd: input.cwd, path: input.path,
     offset: input.offset ?? null, limit: input.limit ?? null };

@@ -16,6 +16,7 @@ type Config = {
   reasoning?: "low" | "medium" | "high" | "xhigh" | "max"; // Both default to medium.
   maxOutputTokens?: number; // OpenAI: 128000; Fireworks: 32768.
   machineId: string; // Execution gateway machine UUID.
+  executionGatewayUrl: string; // Required HTTPS origin, immutable after creation.
   executionToken: string; // Required me1 machine secret; must match machineId.
   cwd: string; // Absolute machine path.
 };

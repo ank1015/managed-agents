@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PI_WRITE_TOOL, PI_WRITE_OPERATION, PI_WRITE_MAX_FILE_BYTES, parseWriteToolInput, parseWriteInput, parseWriteSubmission } from "../src/index.ts";
 
-const execution = { token: `me1.00000000-0000-4000-8000-000000000001.1.${"x".repeat(43)}`, runtimeGeneration: "00000000-0000-4000-8000-000000000002" };
+const execution = { gatewayUrl: "https://gateway.test", token: `me1.00000000-0000-4000-8000-000000000001.1.${"x".repeat(43)}`, runtimeGeneration: "00000000-0000-4000-8000-000000000002" };
 const input = { machineId: "00000000-0000-4000-8000-000000000001", cwd: "/workspace", path: "nested/file.txt", content: "" };
 test("write exposes Pi's two required strings, including empty content, with trusted machine/cwd", () => {
   assert.equal(PI_WRITE_TOOL.name, "write");

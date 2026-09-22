@@ -37,14 +37,14 @@ test("agent-api and both production hosts run native tools through machine-secre
       } },
     { ...common, name: "api", script: api, bindings: { BACKEND_TOKEN: backend }, d1Databases, durableObjects: ns },
     ...(["minimal", "pi"] as const).map(name => ({ ...common, name, script: name === "pi" ? pi : minimal, d1Databases,
-      bindings: { EXECUTION_GATEWAY_URL: "https://gateway.test" }, outboundService: { name: "gateway" },
+      bindings: { }, outboundService: { name: "gateway" },
       durableObjects: name === "pi" ? { PI_NO_COMPACTION_SESSIONS: { className: "PiNoCompactionSessionV1", useSQLite: true } } : { MINIMAL_BASH_SESSIONS: { className: "MinimalBashSessionV7", useSQLite: true } },
       serviceBindings: { LLM: { name: "llm", entrypoint: "LlmGateway" }, ...Object.fromEntries(names.map(n => [n.toUpperCase(), { name: n, entrypoint: `Pi${n[0]!.toUpperCase()}${n.slice(1)}` }])) } })),
     { ...common, name: "llm", script: llm, durableObjects: ns,
       bindings: { GATEWAY_URL: "https://gateway.test", GATEWAY_API_KEY: "test-key", GATEWAY_WEBHOOK_SECRET: "test-webhook-secret", SESSION_ROUTES: routes },
       outboundService: (request: WorkerRequest) => llmGateway.fetch(request) },
     ...names.map((name, i) => ({ ...common, name, script: tools[i]!, durableObjects: ns,
-      bindings: { EXECUTION_GATEWAY_URL: "https://gateway.test", SESSION_ROUTES: routes, CLOUDFLARE_IMAGES_ACCOUNT_ID: imageAccountId, CLOUDFLARE_IMAGES_API_TOKEN: "images-key", CLOUDFLARE_IMAGES_VARIANT: "piread" },
+      bindings: { SESSION_ROUTES: routes, CLOUDFLARE_IMAGES_ACCOUNT_ID: imageAccountId, CLOUDFLARE_IMAGES_API_TOKEN: "images-key", CLOUDFLARE_IMAGES_VARIANT: "piread" },
       outboundService: async (request: WorkerRequest) => new URL(request.url).hostname === "api.cloudflare.com" ? images.fetch(request) : (await app.getWorker("gateway")).fetch(request) })),
   ] });
   let daemon: ReturnType<typeof spawn> | undefined, logs = "";

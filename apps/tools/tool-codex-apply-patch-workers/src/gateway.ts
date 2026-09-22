@@ -4,17 +4,15 @@ import { GatewayError, MAX_HTTP_BYTES, submission, hashJson, jsonValue, object }
 import { CODEX_APPLY_PATCH_RECEIVER } from "@managed-agents/contracts";
 import type { ApplyPatchContext } from "./context.ts";
 import { readLimited } from "./http.ts";
-import type { Env } from "./types.ts";
+import { parseExecutionGatewayUrl } from "@managed-agents/contracts";
 
 export { GatewayError };
 export class Gateway {
   readonly base: string;
   readonly signal: AbortSignal;
-  constructor(env: Env, signal: AbortSignal) {
+  constructor(gatewayUrl: string, signal: AbortSignal) {
     this.signal = signal;
-    const url = new URL(env.EXECUTION_GATEWAY_URL);
-    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/") throw Error("EXECUTION_GATEWAY_URL must be an HTTPS origin.");
-    this.base = url.origin;
+    this.base = parseExecutionGatewayUrl(gatewayUrl);
   }
   async submit(input: ApplyPatchInput, parsed: ApplyPatchSubmission, requestId: string, context: ApplyPatchContext): Promise<void> {
     const body = submission({ requestId, runtimeGeneration: parsed.execution.runtimeGeneration, operation: { operation: "filesystem.patch", params: patchParams(input) }, callback: { receiver: CODEX_APPLY_PATCH_RECEIVER, context: jsonValue(context) } });

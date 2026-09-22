@@ -1,7 +1,7 @@
 # Minimal bash Worker
 
-> Deployed with the machine-secret execution contract on 2026-09-21 UTC.
-> Use fresh enrollment and sessions; see the [deployment record](../../execution/DEPLOYMENT.md).
+> The [deployment record](../../execution/DEPLOYMENT.md) describes the earlier machine-secret release.
+> The per-session gateway URL contract requires matching hosts/tools and fresh sessions.
 
 Hosts one SQLite `MinimalBashSessionV7` Durable Object per `minimal-bash/v7` session. The [harness package](../../packages/harness-minimal-bash/README.md) defines config, history, steering, serial bash and graceful cancellation. This app supplies the driver, private operation-worker bindings and D1 status publication. It has no public callback or session HTTP endpoint. `GET /health` returns `{ "ok": true, "harness": { "id": "minimal-bash", "version": "v7" } }` if invoked through a configured route/binding.
 
@@ -19,6 +19,7 @@ Through authenticated agent-api, `POST /v1/sessions`:
     "accountId": "11111111-1111-4111-8111-111111111111",
     "reasoning": "medium",
     "machineId": "22222222-2222-4222-8222-222222222222",
+    "executionGatewayUrl": "https://execution-api.acentric.dev",
     "executionToken": "<machine execution secret for this machine>",
     "cwd": "/workspace/project"
   },
@@ -105,7 +106,7 @@ new host-private execution table is created automatically. Follow the coordinate
 Drain operations using the retired execution gateway before the cutover and pause
 new sessions until tools, hosts, execution gateway and agent-api have been updated.
 
-Configure `EXECUTION_GATEWAY_URL` and the private `PiBash` service binding. The execution
+Configure the private `PiBash` service binding; sessions supply `config.executionGatewayUrl`. The execution
 gateway routes native tool results through `PiBashCallbacks`. The host discovers
 and pins the machine runtime before its first tool submission. The old execution callback router
 is not part of the Pi path. LLM gateway webhook handling is unchanged.
@@ -128,7 +129,9 @@ Outgoing operation inputs allow 8 MiB; outcomes and individual message rows allo
 
 ## Immutable execution credentials
 
-The harness requires `config.executionToken` (a machine-bound `me1.…` secret).
+The harness requires `config.executionGatewayUrl` (an HTTPS origin) and
+`config.executionToken` (a machine-bound `me1.…` secret). Both are immutable.
+The host supplies the selected origin as `execution.gatewayUrl`; it is not model input.
 The host supplies it as `execution.token` to the Pi tools and pins the discovered
 runtime before the first tool dispatch. No credential goes into model inputs,
 operation payloads, callback context, transcripts or diagnostics.

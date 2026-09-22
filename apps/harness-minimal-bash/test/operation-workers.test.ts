@@ -26,12 +26,12 @@ for (const oversized of [false, true]) test(oversized
     { ...common, name: "api", script: api, bindings: { BACKEND_TOKEN: token }, d1Databases: { SESSION_DIRECTORY: "directory" }, durableObjects: namespaces, outboundService: denyNetwork },
     { ...common, name: "host", script: host, d1Databases: { SESSION_DIRECTORY: "directory" },
       durableObjects: { MINIMAL_BASH_SESSIONS: { className: "MinimalBashSessionV7", useSQLite: true } },
-      serviceBindings: { LLM: { name: "llm", entrypoint: "LlmGateway" }, BASH: { name: "bash", entrypoint: "PiBash" } }, bindings: { EXECUTION_GATEWAY_URL: "https://gateway.test" }, outboundService: { name: "bridge" } },
+      serviceBindings: { LLM: { name: "llm", entrypoint: "LlmGateway" }, BASH: { name: "bash", entrypoint: "PiBash" } }, bindings: { }, outboundService: { name: "bridge" } },
     { ...common, name: "llm", script: llm, durableObjects: namespaces,
       bindings: { GATEWAY_URL: "https://gateway.test", GATEWAY_API_KEY: "test-key", GATEWAY_WEBHOOK_SECRET: "test-webhook-secret", SESSION_ROUTES: routes },
       outboundService: (request: WorkerRequest) => llmGateway.fetch(request) },
     { ...common, name: "bash", script: bash, durableObjects: namespaces,
-      bindings: { EXECUTION_GATEWAY_URL: "https://gateway.test", SESSION_ROUTES: routes },
+      bindings: { SESSION_ROUTES: routes },
       outboundService: (request: WorkerRequest) => executionGateway.fetch(request) },
     // Callback-only test receiver. Production tool submissions use the real host adapter.
     { ...common, name: "bridge", script: bridge, durableObjects: namespaces, serviceBindings: {

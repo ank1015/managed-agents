@@ -1,7 +1,7 @@
 # Pi no-compaction Worker host
 
-> Deployed with the machine-secret execution contract on 2026-09-21 UTC.
-> Use fresh enrollment and sessions; see the [deployment record](../../execution/DEPLOYMENT.md).
+> The [deployment record](../../execution/DEPLOYMENT.md) describes the earlier machine-secret release.
+> The per-session gateway URL contract requires matching hosts/tools and fresh sessions.
 
 Hosts [`pi-no-compaction/v1`](../../packages/harness-pi-no-compaction/README.md) in a
 fresh SQLite Durable Object class, `PiNoCompactionSessionV1`. Worker name:
@@ -19,7 +19,8 @@ fresh SQLite Durable Object class, `PiNoCompactionSessionV1`. Worker name:
 | `WRITE` | `managed-agents-tool-pi-write/PiWrite` |
 | `SESSION_DIRECTORY` | Existing session-directory D1 database |
 
-The host validates `config.executionToken` against `config.machineId` and stores it in
+The host validates `config.executionGatewayUrl` as an HTTPS origin and
+`config.executionToken` against `config.machineId`, then stores them in
 resolved immutable session configuration. Session response projections omit the token. The operation
 workers continue to own their LLM gateway and image-upload credentials. Public workers.dev and preview URLs are disabled; GET `/health` is the
 only HTTP handler. Session commands and completion admission use trusted DO/RPC
@@ -58,6 +59,7 @@ Example session creation body:
     "accountId": "<LLM gateway account UUID>",
     "reasoning": "medium",
     "machineId": "<execution gateway machine UUID>",
+    "executionGatewayUrl": "https://execution-api.acentric.dev",
     "executionToken": "<machine execution secret for this machine>",
     "cwd": "/absolute/workspace"
   }
@@ -80,7 +82,9 @@ Native execution tests also exercise the real gateway and an isolated daemon. Ch
 
 ## Immutable execution credentials
 
-The harness requires `config.executionToken` (a machine-bound `me1.…` secret).
+The harness requires `config.executionGatewayUrl` (an HTTPS origin) and
+`config.executionToken` (a machine-bound `me1.…` secret). Both are immutable.
+The host supplies the selected origin as `execution.gatewayUrl`; it is not model input.
 The host supplies it as `execution.token` to the Pi tools and pins the discovered
 runtime before the first tool dispatch. No credential goes into model inputs,
 operation payloads, callback context, transcripts or diagnostics.

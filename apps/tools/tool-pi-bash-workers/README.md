@@ -35,7 +35,7 @@ Private `PiBash.submit` returns `{ result }` and accepts:
 ```ts
 {
   destination: { routeKey, sessionId },
-  execution: { token, runtimeGeneration },
+  execution: { gatewayUrl, token, runtimeGeneration },
   submission: {
     operationId, submissionId,
     request: {
@@ -119,7 +119,7 @@ paths are not permanent. Output artifacts can be partial under capture/storage l
 
 ## Configuration and rollout
 
-Set `EXECUTION_GATEWAY_URL=https://execution-api.acentric.dev`, `SESSION_ROUTES` and
+Set `SESSION_ROUTES` and
 matching session namespace bindings. Node compatibility is enabled.
 The committed Machine config routes
 `tool-pi-bash-v1 → BASH_EVENTS → managed-agents-tool-pi-bash#PiBashCallbacks`.
@@ -129,7 +129,7 @@ Both production harnesses now supply execution context through their shared host
 integration. Coordinate the rollout with those hosts,
 drain old bash operations, deploy this worker before the Machine binding, then
 use its matching private callback binding. Public HTTP exposes only GET `/health`.
-This contract is deployed; see the [deployment record](../../../execution/DEPLOYMENT.md).
+See the [earlier deployment record](../../../execution/DEPLOYMENT.md). Deploy matching hosts and tools for the per-session gateway URL contract.
 
 ## Verification
 
@@ -145,13 +145,13 @@ longer than HTTP submission's budget, and replay without duplicate side effects.
 It uses temporary files and leaves the installed daemon alone.
 
 
-The harness supplies `execution: { token, runtimeGeneration }` on every submit.
+The harness supplies `execution: { gatewayUrl, token, runtimeGeneration }` on every submit.
 The token must be this machine's `me1.…` execution secret. This worker neither
 stores nor discovers, rotates or refreshes it. Different submissions can target
-different machines with different tokens; the harness owns that choice.
+different gateways and machines with different tokens; the harness owns that choice.
 Credential storage and replacement are outside this tool's contract.
 
-Only the current [execution gateway](../../../execution/apps/execution-gateway/README.md)
+Any gateway implementing the [tool-facing gateway contract](../GATEWAY-CONTRACT.md)
 is supported. User credentials, temporary grants, daemon secrets, legacy jobs
 responses and public webhook envelopes are rejected; there is no compatibility
 fallback. Malformed replies after dispatch are uncertain and must be retried with

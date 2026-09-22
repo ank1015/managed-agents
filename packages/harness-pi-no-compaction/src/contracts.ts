@@ -1,4 +1,4 @@
-import { ContractException, parseExecutionToken, isAbsoluteMachinePath, parseEventBody, parseJsonValue, parseLlmMessage, parseUuid, utf8Bytes } from "@managed-agents/contracts";
+import { ContractException, parseExecutionGatewayUrl, parseExecutionToken, isAbsoluteMachinePath, parseEventBody, parseJsonValue, parseLlmMessage, parseUuid, utf8Bytes } from "@managed-agents/contracts";
 import type { EventBody, JsonValue, LlmMessage } from "@managed-agents/contracts";
 
 export const PI_NO_COMPACTION_IDENTITY = Object.freeze({ id: "pi-no-compaction", version: "v1" });
@@ -15,7 +15,7 @@ export const FIREWORKS_MODELS = Object.freeze({
   "accounts/fireworks/models/kimi-k3": { maxTokens: 1_048_576 },
   "accounts/fireworks/models/deepseek-v4p1-flash": { maxTokens: 393_216 },
 });
-type CommonConfig = { accountId: string; reasoning: ReasoningLevel; machineId: string; executionToken: string; cwd: string; maxOutputTokens: number };
+type CommonConfig = { accountId: string; reasoning: ReasoningLevel; machineId: string; executionGatewayUrl: string; executionToken: string; cwd: string; maxOutputTokens: number };
 export type PiNoCompactionConfig = CommonConfig & (
   | { provider: "openai"; modelId: keyof typeof OPENAI_MODELS }
   | { provider: "fireworks"; modelId: keyof typeof FIREWORKS_MODELS }
@@ -33,7 +33,7 @@ function fields(value: unknown, keys: string[]): Record<string, JsonValue> {
 }
 export function parsePiNoCompactionConfig(value: JsonValue): PiNoCompactionConfig {
   try {
-    const c = fields(value, ["provider", "modelId", "accountId", "reasoning", "machineId", "executionToken", "cwd", "maxOutputTokens"]);
+    const c = fields(value, ["provider", "modelId", "accountId", "reasoning", "machineId", "executionGatewayUrl", "executionToken", "cwd", "maxOutputTokens"]);
     if (c.provider !== "openai" && c.provider !== "fireworks") throw new Error("provider must be openai or fireworks.");
     const catalog = c.provider === "openai" ? OPENAI_MODELS : FIREWORKS_MODELS;
     if (typeof c.modelId !== "string" || !Object.hasOwn(catalog, c.modelId)) throw new Error("modelId must belong to the selected provider's vision-capable catalog.");
@@ -46,7 +46,7 @@ export function parsePiNoCompactionConfig(value: JsonValue): PiNoCompactionConfi
     const machineId = parseUuid(c.machineId), executionToken = parseExecutionToken(c.executionToken);
     if (executionToken.split(".")[1] !== machineId) throw new Error("executionToken must belong to machineId.");
     return { provider: c.provider, modelId: c.modelId, accountId: parseUuid(c.accountId), reasoning: reasoning as ReasoningLevel,
-      machineId, executionToken, cwd: c.cwd, maxOutputTokens } as PiNoCompactionConfig;
+      machineId, executionToken, executionGatewayUrl: parseExecutionGatewayUrl(c.executionGatewayUrl), cwd: c.cwd, maxOutputTokens } as PiNoCompactionConfig;
   } catch (error) { throw new ContractException("INVALID_CONFIG", error instanceof Error ? error.message : "Invalid Pi configuration."); }
 }
 export function parsePiNoCompactionInput(value: EventBody): PiNoCompactionInput {

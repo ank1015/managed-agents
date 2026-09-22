@@ -13,7 +13,7 @@ export const machineId = "00000000-0000-4000-8000-000000000001";
 export const generationId = "00000000-0000-4000-8000-000000000002";
 export const input = { machineId, cwd: "/workspace/project", path: "file.txt", edits: [{ oldText: "old", newText: "new" }] };
 export async function execution(sessionId: string, routeKey = "test-v1"): Promise<ToolExecutionContext> {
-  return { runtimeGeneration: generationId, token: await issueMachineSecret(auth, machineId, "execution", 1) };
+  return { gatewayUrl: "https://gateway.test", runtimeGeneration: generationId, token: await issueMachineSecret(auth, machineId, "execution", 1) };
 }
 export interface FakeJob { id: string; body: Submission; requestHash: string; destination: { routeKey: string; sessionId: string }; machineId: string; outcome: Outcome }
 export function editReceipt(job: FakeJob) {
@@ -26,18 +26,20 @@ export function editReceipt(job: FakeJob) {
     diff: "--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-old\n+new\n", diff_truncated: false, error: null };
 }
 export class FakeGateway {
-  readonly requests: { path: string; authorization: string | null; body: unknown }[] = [];
+  readonly origin: string;
+  constructor(origin = "https://gateway.test") { this.origin = origin; }
+  readonly requests: { url: string; path: string; authorization: string | null; body: unknown }[] = [];
   readonly jobs = new Map<string, FakeJob>(); posts = 0; details = 0; loseAcceptance = 0;
   reject: { status: number; code: string; retryable: boolean; uncertain: boolean } | undefined;
   onAccepted: ((job: FakeJob) => Promise<void>) | undefined;
   acceptanceStatus = 202;
   acceptance: ((value: Record<string, unknown>) => unknown) | undefined;
   async fetch(request: MFRequest): Promise<MFResponse> {
-    if (new URL(request.url).origin !== "https://gateway.test" || !/^\/v1\/machines\/[0-9a-f-]+\/requests$/.test(new URL(request.url).pathname) || request.method !== "POST") throw Error("Only new gateway submission is supported.");
+    if (new URL(request.url).origin !== this.origin || !/^\/v1\/machines\/[0-9a-f-]+\/requests$/.test(new URL(request.url).pathname) || request.method !== "POST") throw Error("Only new gateway submission is supported.");
     this.posts++;
     const token = request.headers.get("Authorization")!.slice(7);
     const raw = await request.json() as Submission;
-    this.requests.push({ path: new URL(request.url).pathname, authorization: request.headers.get("Authorization"), body: structuredClone(raw) });
+    this.requests.push({ url: request.url, path: new URL(request.url).pathname, authorization: request.headers.get("Authorization"), body: structuredClone(raw) });
     const credential = machineSecret(token, "execution");
     if (new URL(request.url).pathname !== `/v1/machines/${credential.machineId}/requests` || raw.runtimeGeneration !== generationId) throw Error("Machine or runtime mismatch.");
     const destination = object(raw.callback.context) as { routeKey: string; sessionId: string };
@@ -73,7 +75,7 @@ export async function bundle(path: string) {
 export async function startStack(gateway = new FakeGateway(), options: { persistPath?: string } = {}) {
   const [worker, fixture] = await Promise.all([bundle("../src/index.ts"), bundle("./fixture.ts")]);
   const common = { modules: true, compatibilityDate: "2026-07-30", compatibilityFlags: ["nodejs_compat"], bindings: {
-    EXECUTION_GATEWAY_URL: "https://gateway.test", SESSION_ROUTES: JSON.stringify({ "test-v1": "SESSIONS" }) }, outboundService: (request: MFRequest) => gateway.fetch(request) };
+    SESSION_ROUTES: JSON.stringify({ "test-v1": "SESSIONS" }) }, outboundService: (request: MFRequest) => gateway.fetch(request) };
   const app = new Miniflare({ log: new Log(LogLevel.ERROR), workers: [
     { ...common, name: "edit", script: worker, durableObjects: { SESSIONS: { className: "TestSession", scriptName: "host" } } },
     { ...common, name: "host", script: fixture, serviceBindings: { EDIT: { name: "edit", entrypoint: "PiEdit" }, EDIT_EVENTS: { name: "edit", entrypoint: "PiEditCallbacks" } }, durableObjects: { SESSIONS: { className: "TestSession", useSQLite: true } } },

@@ -1,21 +1,21 @@
-import { parseWriteInput, PI_WRITE_MAX_FILE_BYTES, PI_WRITE_RECEIVER } from "@managed-agents/contracts";
+import { parseExecutionGatewayUrl, parseWriteInput, PI_WRITE_MAX_FILE_BYTES, PI_WRITE_RECEIVER } from "@managed-agents/contracts";
 import type { WriteSubmission, WriteInput } from "@managed-agents/contracts";
 import { machineSecret, object, identity, uuid, integer, digest, routingFields, outcome, hashJson, jsonValue } from "@managed-agents/execution-gateway-protocol";
 import type { CompletionEvent } from "@managed-agents/execution-gateway-protocol";
 import { sha256 } from "./crypto.ts";
 
 export interface WriteContext {
-  routeKey: string; sessionId: string; machineId: string; runtimeGeneration: string;
+  routeKey: string; sessionId: string; gatewayUrl: string; machineId: string; runtimeGeneration: string;
   operationId: string; submissionId: string; cwd: string; path: string;
   contentSha256: string; contentBytes: number;
 }
 export function parseWriteContext(value: unknown): WriteContext {
-  const r = object(value, ["routeKey", "sessionId", "machineId", "runtimeGeneration", "operationId", "submissionId", "cwd", "path", "contentSha256", "contentBytes"]);
+  const r = object(value, ["routeKey", "sessionId", "gatewayUrl", "machineId", "runtimeGeneration", "operationId", "submissionId", "cwd", "path", "contentSha256", "contentBytes"]);
   for (const key of ["operationId", "submissionId"] as const) {
     if (typeof r[key] !== "string" || !r[key] || r[key].length > 2048) throw Error("Invalid write correlation.");
   }
   const input = parseWriteInput({ machineId: r.machineId, cwd: r.cwd, path: r.path, content: "" });
-  return { routeKey: identity(r.routeKey), sessionId: identity(r.sessionId), machineId: input.machineId, runtimeGeneration: uuid(r.runtimeGeneration),
+  return { gatewayUrl: parseExecutionGatewayUrl(r.gatewayUrl), routeKey: identity(r.routeKey), sessionId: identity(r.sessionId), machineId: input.machineId, runtimeGeneration: uuid(r.runtimeGeneration),
     operationId: r.operationId as string,
     submissionId: r.submissionId as string, cwd: input.cwd, path: input.path,
     contentSha256: digest(r.contentSha256), contentBytes: integer(r.contentBytes, 0, PI_WRITE_MAX_FILE_BYTES) };

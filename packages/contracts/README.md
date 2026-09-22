@@ -90,13 +90,13 @@ Run `pnpm --filter @managed-agents/contracts check` or root `pnpm check`. Tests 
 
 `CreateSessionRequest` contains only `requestId`, `harness`, `config`, and
 `metadata`. Configuration shape belongs to each harness. The two coding
-harnesses require `config.executionToken` and keep it immutable; the generic
+harnesses require `config.executionGatewayUrl` and `config.executionToken` and keep them immutable; the generic
 API has no token field, credential revision or update command.
 
-Private tool submission still carries `execution: {token,runtimeGeneration}`
+Private tool submission still carries `execution: {gatewayUrl,token,runtimeGeneration}`
 outside native input. `parseExecutionToken` validates the machine-secret format.
 `acceptToolCompletion` carries
-`{execution:{machineId,runtimeGeneration},completion}`; the host validates
+`{execution:{gatewayUrl,machineId,runtimeGeneration},completion}`; the host validates
 execution identity before generic runtime admission. `acceptCompletion` on
 these hosts is reserved for LLM results.
 

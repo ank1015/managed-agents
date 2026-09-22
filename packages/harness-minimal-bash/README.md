@@ -17,6 +17,7 @@ type Config = {
   accountId: string; // UUID owned by the LLM worker's dedicated gateway user
   reasoning?: "low" | "medium" | "high" | "xhigh" | "max"; // default: medium
   machineId: string; // Execution gateway machine UUID.
+  executionGatewayUrl: string; // Required HTTPS origin, immutable after creation.
   executionToken: string; // Required me1 machine secret; must match machineId.
   cwd: string; // absolute path on that machine
 };

@@ -1,21 +1,21 @@
-import { parseApplyPatchInput, CODEX_APPLY_PATCH_RECEIVER } from "@managed-agents/contracts";
+import { parseExecutionGatewayUrl, parseApplyPatchInput, CODEX_APPLY_PATCH_RECEIVER } from "@managed-agents/contracts";
 import type { ApplyPatchSubmission, ApplyPatchInput } from "@managed-agents/contracts";
 import { machineSecret, object, identity, uuid, digest, routingFields, outcome, hashJson, jsonValue } from "@managed-agents/execution-gateway-protocol";
 import type { CompletionEvent } from "@managed-agents/execution-gateway-protocol";
 import { sha256 } from "./crypto.ts";
 
 export interface ApplyPatchContext {
-  routeKey: string; sessionId: string; machineId: string; runtimeGeneration: string;
+  routeKey: string; sessionId: string; gatewayUrl: string; machineId: string; runtimeGeneration: string;
   operationId: string; submissionId: string; cwd: string; patchSha256: string;
 }
 /** Signed correlation contains a digest, never patch text or credentials. */
 export function parseApplyPatchContext(value: unknown): ApplyPatchContext {
-  const r = object(value, ["routeKey", "sessionId", "machineId", "runtimeGeneration", "operationId", "submissionId", "cwd", "patchSha256"]);
+  const r = object(value, ["routeKey", "sessionId", "gatewayUrl", "machineId", "runtimeGeneration", "operationId", "submissionId", "cwd", "patchSha256"]);
   for (const key of ["operationId", "submissionId"] as const) {
     if (typeof r[key] !== "string" || !r[key] || r[key].length > 2048) throw Error("Invalid apply_patch correlation.");
   }
   const input = parseApplyPatchInput({ machineId: r.machineId, cwd: r.cwd, patch: "" });
-  return { routeKey: identity(r.routeKey), sessionId: identity(r.sessionId), machineId: input.machineId,
+  return { gatewayUrl: parseExecutionGatewayUrl(r.gatewayUrl), routeKey: identity(r.routeKey), sessionId: identity(r.sessionId), machineId: input.machineId,
     runtimeGeneration: uuid(r.runtimeGeneration), operationId: r.operationId as string,
     submissionId: r.submissionId as string, cwd: input.cwd, patchSha256: digest(r.patchSha256) };
 }

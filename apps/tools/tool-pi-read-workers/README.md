@@ -40,7 +40,7 @@ the model. Unknown execution/daemon failures remain failed operations with
 {
   destination: { routeKey, sessionId },
   execution: {
-    token, runtimeGeneration,
+    gatewayUrl, token, runtimeGeneration,
   },
   submission: {
     operationId, submissionId,
@@ -105,7 +105,7 @@ Timeout does not cancel native execution, and a late DO commit is deduplicated.
 
 ## Configuration and rollout
 
-- `EXECUTION_GATEWAY_URL=https://execution-api.acentric.dev`.
+- Gateway URL comes from the session's immutable `config.executionGatewayUrl` via `execution.gatewayUrl`; no deployment-wide URL setting.
 - Allowlisted `SESSION_ROUTES` and matching session namespace bindings.
 - `CLOUDFLARE_IMAGES_ACCOUNT_ID`, account-scoped `CLOUDFLARE_IMAGES_API_TOKEN`, and
   `CLOUDFLARE_IMAGES_VARIANT` for image reads. Text needs no Images credentials.
@@ -115,7 +115,7 @@ Production harness execution-context integration is implemented. Coordinate its
 deployment and drain old reads before rollout. Deploy this worker before the
 Machine callback binding; remove the legacy router's read binding. Public
 HTTP exposes only GET `/health`. Cwd is a resolution base, not a filesystem sandbox.
-This contract is deployed; see the [deployment record](../../../execution/DEPLOYMENT.md).
+See the [earlier deployment record](../../../execution/DEPLOYMENT.md). Deploy matching hosts and tools for the per-session gateway URL contract.
 
 ## Verification
 
@@ -130,13 +130,13 @@ It reads actual files and an image through the full stack; the Images HTTP endpo
 is faked. Tests do not modify the installed daemon or upload production images.
 
 
-The harness supplies `execution: { token, runtimeGeneration }` on every submit.
+The harness supplies `execution: { gatewayUrl, token, runtimeGeneration }` on every submit.
 The token must be this machine's `me1.…` execution secret. This worker neither
 stores nor discovers, rotates or refreshes it. Different submissions can target
-different machines with different tokens; the harness owns that choice.
+different gateways and machines with different tokens; the harness owns that choice.
 Credential storage and replacement are outside this tool's contract.
 
-Only the current [execution gateway](../../../execution/apps/execution-gateway/README.md)
+Any gateway implementing the [tool-facing gateway contract](../GATEWAY-CONTRACT.md)
 is supported. User credentials, temporary grants, daemon secrets, legacy jobs
 responses and public webhook envelopes are rejected; there is no compatibility
 fallback. Malformed replies after dispatch are uncertain and must be retried with
