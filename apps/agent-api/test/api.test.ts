@@ -7,7 +7,7 @@ import type { Miniflare } from "miniflare";
 import type { CreateSessionResult, InputReceipt, ListSessionsResult } from "@managed-agents/contracts";
 import { LOCAL_BACKEND_TOKEN, startLocalStack } from "./local-stack.ts";
 
-const config = { provider: "openai", modelId: "gpt-5.6-sol", accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", executionToken: `me1.22222222-2222-4222-8222-222222222222.1.${"x".repeat(43)}`, cwd: "/workspace" };
+const config = { provider: "openai", modelId: "gpt-5.6-sol", accountId: "11111111-1111-4111-8111-111111111111", machineId: "22222222-2222-4222-8222-222222222222", executionGatewayUrl: "https://gateway.test", executionToken: `me1.22222222-2222-4222-8222-222222222222.1.${"x".repeat(43)}`, cwd: "/workspace" };
 let app: Miniflare;
 before(async () => { app = await startLocalStack({ testHost: true }); });
 after(async () => { await app?.dispose(); });
