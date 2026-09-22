@@ -20,7 +20,7 @@ test("read exposes Pi's path/offset/limit schema and keeps machine/cwd outside m
   assert.throws(() => parseReadInput({ ...base, machineId: "no" }));
 });
 test("read submission accepts structured provider correlation and rejects caller routing injection", () => {
-  const value = { execution: { token: `me1.00000000-0000-4000-8000-000000000001.1.${"x".repeat(43)}`, runtimeGeneration: "00000000-0000-4000-8000-000000000002" }, destination: { routeKey: "test-v1", sessionId: "session" },
+  const value = { execution: { gatewayUrl: "https://gateway.test", token: `me1.00000000-0000-4000-8000-000000000001.1.${"x".repeat(43)}`, runtimeGeneration: "00000000-0000-4000-8000-000000000002" }, destination: { routeKey: "test-v1", sessionId: "session" },
     submission: { operationId: "operation", submissionId: "operation", request: { ...PI_READ_OPERATION, input: base } } };
   assert.deepEqual(parseReadSubmission(value), value);
   const { execution, ...legacy } = value;

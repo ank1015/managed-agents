@@ -9,7 +9,7 @@ test("model sees only Pi command/timeout; harness supplies the execution destina
   assert.deepEqual(PI_BASH_TOOL.parameters.required, ["command"]);
   assert.deepEqual(parseBashToolInput({ command: "" }), { command: "" });
   assert.deepEqual(parseBashInput(input), input);
-  assert.deepEqual(parseBashSubmission({ execution: {token: `me1.00000000-0000-4000-8000-000000000001.1.${"x".repeat(43)}`, runtimeGeneration: "00000000-0000-4000-8000-000000000002"}, destination: { routeKey: "coding", sessionId: "s" },
+  assert.deepEqual(parseBashSubmission({ execution: {gatewayUrl: "https://gateway.test", token: `me1.00000000-0000-4000-8000-000000000001.1.${"x".repeat(43)}`, runtimeGeneration: "00000000-0000-4000-8000-000000000002"}, destination: { routeKey: "coding", sessionId: "s" },
     submission: { operationId: "o", submissionId: "sub", request: { ...PI_BASH_OPERATION, input } } }).submission.request.input, input);
   const llm = parseLlmInput({ accountId: machineId, modelId: "m", tools: [PI_BASH_TOOL],
     messages: [{ role: "user", content: [{ type: "text", text: "run pwd" }] }] });

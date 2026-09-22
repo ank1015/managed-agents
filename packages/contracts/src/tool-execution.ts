@@ -8,15 +8,33 @@ import { nonemptyString, record } from "./validation.ts";
 
 /** Server-only context supplied by the harness host, outside model input. */
 export interface ToolExecutionContext {
-  token: string; runtimeGeneration: string;
+  gatewayUrl: string; token: string; runtimeGeneration: string;
 }
 export interface ToolExecutionSubmission { destination: SessionDestination; execution: ToolExecutionContext; submission: ProviderSubmission }
 export function parseToolExecutionContext(value: unknown): ToolExecutionContext {
-  const r = record(parseJsonValue(value), ["token", "runtimeGeneration"], "execution context");
+  const r = record(parseJsonValue(value), ["gatewayUrl", "token", "runtimeGeneration"], "execution context");
   const token = nonemptyString(r.token, "execution.token");
   if (token.length > 32768 || !/^[A-Za-z0-9._~-]+$/.test(token)) throw new ContractException("INVALID_REQUEST", "Invalid execution token encoding.");
   parseExecutionToken(token);
-  return { token, runtimeGeneration: parseUuid(r.runtimeGeneration) };
+  return { gatewayUrl: parseExecutionGatewayUrl(r.gatewayUrl), token, runtimeGeneration: parseUuid(r.runtimeGeneration) };
+}
+
+/** Fixed /v1 endpoints are relative to this origin, never to an arbitrary path.
+ * Supplied by the trusted session creator, not the model. Never follow redirects
+ * when sending credentials to the selected gateway. */
+export function parseExecutionGatewayUrl(value: unknown): string {
+  if (typeof value !== "string" || value.length > 2048 || !/^https:\/\/[^/?#@\\]+\/?$/i.test(value) || /[\s\u0000-\u001f\u007f]/.test(value)) {
+    throw new ContractException("INVALID_REQUEST", "executionGatewayUrl must be an HTTPS origin without credentials, path, query or fragment.");
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.search || url.hash || url.pathname !== "/"
+      || value.includes("?") || value.includes("#")) throw Error();
+    return url.origin;
+  } catch {
+    // URL parser errors can contain user input. Do not reflect it in diagnostics.
+    throw new ContractException("INVALID_REQUEST", "executionGatewayUrl must be an HTTPS origin without credentials, path, query or fragment.");
+  }
 }
 function executionIdentity(value: unknown): string {
   const id = nonemptyString(parseJsonValue(value), "execution identity");
