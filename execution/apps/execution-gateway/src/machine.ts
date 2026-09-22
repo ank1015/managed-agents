@@ -193,7 +193,7 @@ export class Machine extends DurableObject<Env> {
   private async deliver(ws: WebSocket, a: Attachment, message: Record<string, unknown>): Promise<void> {
     object(message, ["type", "deliveryId", "routingEnvelope", "outcome"]);
     const deliveryId = digest(message.deliveryId);
-    if (this.deliveries >= this.limit("MAX_CONCURRENT_DELIVERIES", 2, 1, 8)) {
+    if (this.deliveries >= this.limit("MAX_CONCURRENT_DELIVERIES", 16, 1, 16)) {
       ws.send(JSON.stringify({ type: "result_nack", deliveryId, error: { code: "DELIVERY_CAPACITY", retryable: true } })); return;
     }
     this.deliveries++;

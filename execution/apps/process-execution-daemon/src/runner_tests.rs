@@ -84,6 +84,102 @@ async fn exchange(peer: &mut Peer, req: &Incoming) -> Value {
 }
 
 #[tokio::test]
+async fn capacity_nack_retries_the_same_result_promptly_without_reexecuting() {
+    time::timeout(Duration::from_secs(15), async {
+        let directory = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = Config {
+            cwd: directory.path().to_owned(),
+            allow_insecure_loopback: true,
+            ..Config::default()
+        };
+        assert_eq!(config.delivery_ack_timeout_ms, 10000);
+        let core = ProcessExecutionCore::new(config.core(directory.path())).unwrap();
+        let generation = core.generation();
+        let (faults, mut failures) = mpsc::unbounded_channel();
+        let engine = Engine {
+            core: core.clone(),
+            journal: Arc::new(Journal::open(directory.path()).unwrap()),
+            tasks: TaskTracker::new(),
+            config,
+            faults,
+            ready: Arc::new(Notify::new()),
+        };
+        let machine = Uuid::new_v4();
+        let mut credential = Credential {
+            gateway_url: format!("http://{}", listener.local_addr().unwrap()),
+            machine_id: machine,
+            token: "local-test-token".into(),
+        };
+        let req = request(
+            generation,
+            "filesystem.write",
+            json!({
+                "cwd": directory.path(), "path": "once.txt", "create_parents": true,
+                "content": {"type":"base64", "data":"b25jZQo="}
+            }),
+        );
+        let peer = async {
+            let mut peer = accept(&listener, machine, generation).await;
+            put(&mut peer, serde_json::to_value(&req).unwrap()).await;
+            assert_eq!(get(&mut peer).await["type"], "accepted");
+            let first = get(&mut peer).await;
+            assert_eq!(first["type"], "result");
+            assert_eq!(first["outcome"]["status"], "ok");
+            assert_eq!(
+                std::fs::read(directory.path().join("once.txt")).unwrap(),
+                b"once\n"
+            );
+            // Missing acknowledgment alone must not activate capacity backoff.
+            assert!(
+                time::timeout(Duration::from_millis(350), get(&mut peer))
+                    .await
+                    .is_err()
+            );
+            std::fs::write(directory.path().join("once.txt"), b"newer\n").unwrap();
+            for _ in 0..2 {
+                put(
+                    &mut peer,
+                    json!({"type":"result_nack","deliveryId":first["deliveryId"],
+                    "error":{"code":"DELIVERY_CAPACITY","retryable":true}}),
+                )
+                .await;
+                let replay = time::timeout(Duration::from_secs(2), get(&mut peer))
+                    .await
+                    .expect("capacity rejection must not wait for the ten-second ACK timeout");
+                assert_eq!(replay, first);
+                assert_eq!(
+                    std::fs::read(directory.path().join("once.txt")).unwrap(),
+                    b"newer\n"
+                );
+            }
+            put(
+                &mut peer,
+                json!({"type":"result_ack","deliveryId":first["deliveryId"],
+                "requestId":req.request_id,"requestHash":req.request_hash,
+                "resultHash":protocol::hash(&first["outcome"]).unwrap()}),
+            )
+            .await;
+            exchange(
+                &mut peer,
+                &request(generation, "runtime.capabilities", json!({})),
+            )
+            .await;
+            peer.close(None).await.unwrap();
+        };
+        let (_, disconnected) =
+            tokio::join!(peer, connection(directory.path(), &mut credential, &engine));
+        assert!(disconnected.is_err());
+        core.shutdown().await.unwrap();
+        engine.tasks.close();
+        engine.tasks.wait().await;
+        assert!(failures.try_recv().is_err());
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn reconnect_replays_delivered_results_and_preserves_uuid_process_control() {
     time::timeout(Duration::from_secs(15), async {
         let directory = tempfile::tempdir().unwrap();

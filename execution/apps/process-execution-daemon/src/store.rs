@@ -2,6 +2,7 @@ use crate::{
     Result,
     config::Config,
     protocol::{self, Incoming, MAX_RESULT},
+    retry::delivery_capacity_backoff,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -275,7 +276,29 @@ impl Journal {
         Ok(Some(metadata))
     }
     pub fn nack(&self, id: &str, code: &str, retryable: bool) -> Result<()> {
-        self.db.lock().unwrap().execute("UPDATE requests SET reason=?,last_delivery_error=?,state=CASE WHEN ? THEN state ELSE 'quarantined' END WHERE delivery_id=? AND state='pending'", params![code,code,retryable,id])?;
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        if retryable && code == "DELIVERY_CAPACITY" {
+            let attempts: Option<u32> = tx
+                .query_row(
+                    "SELECT attempts FROM requests WHERE delivery_id=? AND state='pending'",
+                    [id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(attempts) = attempts {
+                let retry_at = now().saturating_add(delivery_capacity_backoff(attempts) as i64);
+                // The send has already scheduled its lost-ACK timeout. Shorten it
+                // durably; a repeated/late NACK must never postpone a due retry.
+                tx.execute(
+                    "UPDATE requests SET next_attempt=MIN(next_attempt,?),reason=?,last_delivery_error=? WHERE delivery_id=? AND state='pending'",
+                    params![retry_at, code, code, id],
+                )?;
+            }
+        } else {
+            tx.execute("UPDATE requests SET reason=?,last_delivery_error=?,state=CASE WHEN ? THEN state ELSE 'quarantined' END WHERE delivery_id=? AND state='pending'", params![code,code,retryable,id])?;
+        }
+        tx.commit()?;
         Ok(())
     }
     pub fn sweep(&self, current: Uuid, config: &Config) -> Result<()> {
@@ -411,6 +434,82 @@ mod tests {
                 .query_row("SELECT attempts FROM requests", [], |r| r.get(0))
                 .unwrap();
         assert_eq!(attempts, 1);
+    }
+    #[test]
+    fn capacity_nack_durably_shortens_ack_wait_without_changing_result_or_attempts() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = request(Uuid::new_v4());
+        let j = Journal::open(dir.path()).unwrap();
+        j.admit(&req, false, &Config::default()).unwrap();
+        j.complete(&req.key(), &json!({"status":"ok","result":"unchanged"}))
+            .unwrap();
+        let original = j.next().unwrap().unwrap();
+        let id = original.frame["deliveryId"].as_str().unwrap();
+        j.attempted(&req.key(), 1000).unwrap();
+        j.flushed(&req.key(), 10000).unwrap();
+        let before = now();
+        j.nack(id, "DELIVERY_CAPACITY", true).unwrap();
+        let after = now();
+        let deadline: i64 =
+            j.db.lock()
+                .unwrap()
+                .query_row("SELECT next_attempt FROM requests", [], |r| r.get(0))
+                .unwrap();
+        assert!((before + 100..=after + 200).contains(&deadline));
+        drop(j);
+
+        // The shortened schedule survives reopening the journal.
+        let j = Journal::open(dir.path()).unwrap();
+        let stored: i64 =
+            j.db.lock()
+                .unwrap()
+                .query_row("SELECT next_attempt FROM requests", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(stored, deadline);
+        // A duplicate rejection must not extend an earlier/due retry.
+        j.db.lock()
+            .unwrap()
+            .execute("UPDATE requests SET next_attempt=0", [])
+            .unwrap();
+        j.nack(id, "DELIVERY_CAPACITY", true).unwrap();
+        let replay = j.next().unwrap().unwrap();
+        assert_eq!(replay.frame, original.frame);
+        assert_eq!(replay.attempts, 1);
+    }
+    #[test]
+    fn only_retryable_capacity_nacks_shorten_the_ack_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::open(dir.path()).unwrap();
+        let req = request(Uuid::new_v4());
+        j.admit(&req, false, &Config::default()).unwrap();
+        j.complete(&req.key(), &json!({"status":"ok","result":null}))
+            .unwrap();
+        let delivery = j.next().unwrap().unwrap();
+        let id = delivery.frame["deliveryId"].as_str().unwrap();
+        j.attempted(&req.key(), 1000).unwrap();
+        j.flushed(&req.key(), 10000).unwrap();
+        let deadline = || {
+            j.db.lock()
+                .unwrap()
+                .query_row("SELECT next_attempt FROM requests", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .unwrap()
+        };
+        let original = deadline();
+        assert!(original >= now() + 9000);
+        assert!(j.next().unwrap().is_none());
+        j.nack(id, "CALLBACK_UNAVAILABLE", true).unwrap();
+        assert_eq!(deadline(), original);
+        j.nack("unknown", "DELIVERY_CAPACITY", true).unwrap();
+        assert_eq!(deadline(), original);
+        j.nack(id, "DELIVERY_CAPACITY", false).unwrap();
+        assert_eq!(deadline(), original);
+        assert!(j.next().unwrap().is_none());
+        assert_eq!(j.failures().unwrap().len(), 1);
+        j.nack(id, "DELIVERY_CAPACITY", true).unwrap();
+        assert_eq!(deadline(), original);
+        assert!(j.next().unwrap().is_none());
     }
     #[test]
     fn locks_exclude_another_runtime_and_private_files_are_written() {

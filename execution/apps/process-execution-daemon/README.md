@@ -262,10 +262,17 @@ for that foreground invocation. Configuration defaults:
 | `artifact_retention_seconds` | 86400 |
 | `reconnect_min_ms`, `reconnect_max_ms` | 500, 30000 |
 | `delivery_retry_ms` | 1000; exponential retries capped at 30 seconds |
-| `delivery_ack_timeout_ms` | 10000; minimum wait after a result finishes sending |
+| `delivery_ack_timeout_ms` | 10000; wait for a missing acknowledgment after a result finishes sending |
 | `delivery_send_timeout_seconds` | 60; maximum duration for a result upload, range 1–300 |
 | `heartbeat_seconds` | 20; connection is stale after three intervals |
 | `shutdown_seconds` | 15 |
+
+An explicit retryable `DELIVERY_CAPACITY` rejection shortens the pending
+acknowledgment wait: initial backoff is 100–200 ms with jitter, increasing to a
+maximum of 1 second for repeated attempts. The shortened deadline is persisted in
+the outbox and does not rerun the operation. Missing acknowledgments and other
+retryable callback failures retain the normal acknowledgment/retry policy;
+permanent failures still quarantine the result.
 
 Every 24-hour default is configurable. The delivery horizon is a local quarantine
 policy, not an authorization expiry; saved routing envelopes do not expire. File/image and native resource limits retain core defaults;

@@ -146,7 +146,7 @@ rerunning them. Native operations retain their core-defined yield/finish semanti
 | Setting | Default | Bounds |
 |---|---|---|
 | MAX_PENDING_SUBMISSIONS | 8 | 1–64 per machine |
-| MAX_CONCURRENT_DELIVERIES | 2 | 1–8 per machine |
+| MAX_CONCURRENT_DELIVERIES | 16 | 1–16 per machine |
 | MAX_BUFFERED_BYTES | 16777216 | 8519680–67108864 per machine |
 | ACCEPT_TIMEOUT_MS | 5000 | 10–30000 |
 | CALLBACK_TIMEOUT_MS | 8000 | 10–30000; deployed config uses 30000 for image uploads |
@@ -155,6 +155,12 @@ Native payloads are limited to 8 MiB, HTTP bodies to 8 MiB + 64 KiB, WebSocket
 frames to 8 MiB + 128 KiB. Body reads have an 8-second deadline. Buffer reservations
 bound admitted wire bytes, not total heap usage. Automatic text heartbeat replies
 allow idle sockets to hibernate without periodic SQL writes.
+
+The delivery limit counts in-flight result callbacks, not running operations.
+An excess result receives retryable `DELIVERY_CAPACITY`; it remains in the daemon
+outbox. The daemon retries that explicit rejection with 100–200 ms initial jittered
+backoff, increasing to at most 1 second, without re-executing the operation. The
+normal acknowledgment timeout still applies when no acknowledgment is received.
 
 ## Verification
 
